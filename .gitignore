@@ -1,0 +1,22 @@
+# secrets
+.env
+
+# generated / intermediate files
+rag/cleaned_chunks.json
+rag/cleaned_posts.json
+rag/outputs/
+
+# test scripts
+rag/test/
+
+# other modules (not part of this PR)
+travel_consultant/
+hugging_face_playground/
+index.html
+test.py
+temp.txt
+
+# tooling
+.vscode/
+.claude/
+CLAUDE.md
