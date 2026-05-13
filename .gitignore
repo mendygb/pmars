@@ -5,6 +5,8 @@
 rag/cleaned_chunks.json
 rag/cleaned_posts.json
 rag/outputs/
+agents/outputs/
+**/__pycache__/
 
 # test scripts
 rag/test/

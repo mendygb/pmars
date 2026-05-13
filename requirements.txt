@@ -1,0 +1,8 @@
+openai
+pinecone
+pymongo
+langchain-text-splitters
+python-dotenv
+transformers
+torch
+langgraph
