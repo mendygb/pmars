@@ -1,12 +1,14 @@
 import os
 import sys
 import json
+import time
 import argparse
 import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
 from pinecone import Pinecone
 from pymongo import MongoClient
+from tavily import TavilyClient
 from langgraph.graph import StateGraph, END
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
@@ -26,11 +28,11 @@ DB_NAME = "social_media_db"
 COLLECTION_NAME = "posts"
 
 
-def build_graph(client, index, posts_col, chunks_by_pid, cleaned_posts, debug=False):
+def build_graph(client, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key="", debug=False):
     director = make_director_node(client, debug=debug)
-    research = make_research_node(client, index, posts_col, chunks_by_pid, cleaned_posts, debug=debug)
-    copywriter = make_copywriter_node(client)
-    critic = make_critic_node(client)
+    research = make_research_node(client, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key=maps_api_key, debug=debug)
+    copywriter = make_copywriter_node(client, debug=debug)
+    critic = make_critic_node(client, debug=debug)
 
     graph = StateGraph(PostState)
     graph.add_node("director", director)
@@ -81,6 +83,8 @@ def main():
     args = parser.parse_args()
 
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+    maps_api_key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
     pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
     index = pc.Index(INDEX_NAME)
@@ -99,7 +103,7 @@ def main():
     with open(os.path.join(rag_dir, "cleaned_posts.json"), encoding="utf-8") as f:
         cleaned_posts = {p["pid"]: p for p in json.load(f)}
 
-    compiled = build_graph(client, index, posts_col, chunks_by_pid, cleaned_posts, debug=args.debug)
+    compiled = build_graph(client, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key=maps_api_key, debug=args.debug)
 
     state: PostState = {
         "user_input": "",
@@ -128,9 +132,16 @@ def main():
             break
 
         state["user_input"] = user_input
+        t_start = time.time()
         state = compiled.invoke(state)
+        total_ms = int((time.time() - t_start) * 1000)
 
         turn_record = {"user_input": user_input, "style": state.get("style", "")}
+
+        if args.debug:
+            print(f"── Total ─────────────────────────────────────────")
+            print(f"  {total_ms:>6} ms")
+            print(f"─────────────────────────────────────────────────\n")
 
         if state.get("needs_clarification"):
             print(f"\nDirector: {state['clarification_question']}\n")

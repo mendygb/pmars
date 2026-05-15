@@ -1,11 +1,12 @@
 import json
+import time
 from openai import OpenAI
 from agents.state import PostState
 
 # UPGRADE: swap gpt-4o-mini → gpt-4o for more accurate routing and style classification
 MODEL = "gpt-4o-mini"
 
-SYSTEM_PROMPT = """You are the Director of a XiaoHongShu (小红书) post-writing pipeline. You coordinate specialized agents to help users write engaging social media posts about places they've visited.
+SYSTEM_PROMPT = """You are the Director of a social media post-writing pipeline. You coordinate specialized agents to help users write engaging social media posts about places they've visited.
 
 ## Post Styles
 - checkin (打卡): short, visual, location-declaration — "I was here"
@@ -17,6 +18,7 @@ SYSTEM_PROMPT = """You are the Director of a XiaoHongShu (小红书) post-writin
 ## Routing Rules
 
 **First turn (no existing draft):**
+- If the user provides a URL → route directly to research, no clarification needed
 - If the description gives you a place + at least one detail (a feeling, food, activity, or view) → route to research
 - If the description is too vague (just a place name with no detail) → ask ONE short, targeted question to extract a memorable moment or vibe
 - Pick the style that best fits the user's words
@@ -65,22 +67,25 @@ def make_director_node(client: OpenAI, debug=False):
 
         messages.append({"role": "user", "content": user_content})
 
+        t0 = time.time()
         response = client.chat.completions.create(
             model=MODEL,
             messages=messages,
             response_format={"type": "json_object"},
             temperature=0.2,  # low — routing should be stable and deterministic
         )
+        llm_ms = int((time.time() - t0) * 1000)
 
         decision = json.loads(response.choices[0].message.content)
 
         if debug:
-            print(f"\n── Director decision ──────────────────────────────")
+            print(f"\n── Director ─────────────────────────────────────")
             print(f"  style:          {decision.get('style')}")
             print(f"  next_node:      {decision.get('next_node')}")
             print(f"  is_new_post:    {decision.get('is_new_post')}")
             print(f"  clarification:  {decision.get('needs_clarification')} → {decision.get('clarification_question')}")
-            print(f"───────────────────────────────────────────────────\n")
+            print(f"  LLM (routing):  {llm_ms:>6} ms")
+            print(f"─────────────────────────────────────────────────\n")
 
         needs_clarification = decision.get("needs_clarification", False)
 

@@ -6,3 +6,6 @@ python-dotenv
 transformers
 torch
 langgraph
+tavily-python
+mcp
+mcp-server-fetch

@@ -1,3 +1,4 @@
+import time
 from openai import OpenAI
 from agents.state import PostState
 
@@ -9,7 +10,7 @@ SYSTEM_PROMPT = """You are a senior social media content editor and SEO speciali
 Your job — check these four things and fix what's broken:
 1. Hook: does the first line make someone stop scrolling? If not, rewrite it.
 2. Specificity: flag clichés (e.g. "amazing", "must-try", "hidden gem", "so good") and replace with vivid, concrete details.
-3. Hashtags: are they specific and searchable on XiaoHongShu? Replace generic ones with niche tags relevant to the place and activity.
+3. Hashtags: are they specific and searchable? Replace generic ones with niche tags relevant to the place and activity.
 4. Factual consistency: if reference material is provided, flag any contradictions.
 
 Rules:
@@ -18,19 +19,21 @@ Rules:
 - Output the final polished post only — no preamble, no "Here is the revised version:" """
 
 
-def make_critic_node(client: OpenAI):
+def make_critic_node(client: OpenAI, debug=False):
     def critic_node(state: PostState) -> dict:
         print("✨ Adding the finishing touches...")
 
         draft = state.get("draft_content", "")
         style = state.get("style", "freeform")
-        context = state.get("location_info", {}).get("context", "")
+        loc = state.get("location_info", {})
+        facts_context = loc.get("facts_context", "")
 
         user_content = f"Post style: {style}\n\nDraft:\n{draft}"
-        if context:
-            # Truncate reference material to keep token cost low
-            user_content += f"\n\nReference material (for fact-check only):\n{context[:800]}"
+        if facts_context:
+            # Fact-check against place details only — style reference not needed here
+            user_content += f"\n\nPlace details (for fact-check only):\n{facts_context[:800]}"
 
+        t0 = time.time()
         response = client.chat.completions.create(
             model=MODEL,
             messages=[
@@ -40,6 +43,12 @@ def make_critic_node(client: OpenAI):
             temperature=0.4,
             max_tokens=600,
         )
+        llm_ms = int((time.time() - t0) * 1000)
+
+        if debug:
+            print(f"\n── Critic ───────────────────────────────────────")
+            print(f"  LLM (review):   {llm_ms:>6} ms")
+            print(f"─────────────────────────────────────────────────\n")
 
         final_post = response.choices[0].message.content.strip()
         return {

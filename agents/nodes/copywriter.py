@@ -1,3 +1,4 @@
+import time
 from openai import OpenAI
 from agents.state import PostState
 
@@ -55,7 +56,7 @@ Style-specific rules for this post (override with user's explicit format request
 {style_guide}"""
 
 
-def make_copywriter_node(client: OpenAI):
+def make_copywriter_node(client: OpenAI, debug=False):
     def copywriter_node(state: PostState) -> dict:
         print("✍️  Writing your post...")
 
@@ -64,7 +65,11 @@ def make_copywriter_node(client: OpenAI):
         system_prompt = BASE_SYSTEM_PROMPT.format(style_guide=style_guide)
 
         is_refinement = bool(state.get("draft_content"))
-        context = state.get("location_info", {}).get("context", "")
+        loc = state.get("location_info", {})
+        # Style reference (RAG posts) — capped to limit input tokens
+        style_context = loc.get("style_context", "")[:1500]
+        # Factual data (Google Maps, web search, fetched URL) — sent in full
+        facts_context = loc.get("facts_context", "")
 
         if is_refinement:
             # Targeted rewrite — touch only what the user asked to change
@@ -75,12 +80,15 @@ def make_copywriter_node(client: OpenAI):
                 "Preserve voice, specific details, and hashtags unless asked to change them."
             )
         else:
-            # First draft — use reference posts + full conversation context
+            # First draft — factual context first, then style reference
             user_content = f"User's experience: {state['user_input']}"
 
-            if context:
+            if facts_context:
+                user_content = f"Place details:\n\n{facts_context}\n\n---\n\n{user_content}"
+
+            if style_context:
                 user_content = (
-                    f"Reference posts from similar places:\n\n{context}\n\n"
+                    f"Reference posts from similar places:\n\n{style_context}\n\n"
                     f"---\n\n{user_content}"
                 )
 
@@ -93,6 +101,7 @@ def make_copywriter_node(client: OpenAI):
                 )
                 user_content = f"Conversation context:\n{qa_lines}\n\n{user_content}"
 
+        t0 = time.time()
         response = client.chat.completions.create(
             model=MODEL,
             messages=[
@@ -102,6 +111,12 @@ def make_copywriter_node(client: OpenAI):
             temperature=0.9,  # high — creative latitude for writing
             max_tokens=600,
         )
+        llm_ms = int((time.time() - t0) * 1000)
+
+        if debug:
+            print(f"\n── Copywriter ───────────────────────────────────")
+            print(f"  LLM (writing):  {llm_ms:>6} ms")
+            print(f"─────────────────────────────────────────────────\n")
 
         draft = response.choices[0].message.content.strip()
         return {"draft_content": draft}
