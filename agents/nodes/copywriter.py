@@ -1,5 +1,5 @@
 import time
-from openai import OpenAI
+from openai import AsyncOpenAI
 from agents.state import PostState
 
 # UPGRADE: swap gpt-4o-mini → gpt-4o for richer, more platform-native writing
@@ -56,8 +56,8 @@ Style-specific rules for this post (override with user's explicit format request
 {style_guide}"""
 
 
-def make_copywriter_node(client: OpenAI, debug=False):
-    def copywriter_node(state: PostState) -> dict:
+def make_copywriter_node(client: AsyncOpenAI, debug=False):
+    async def copywriter_node(state: PostState) -> dict:
         print("✍️  Writing your post...")
 
         style = state.get("style", "freeform")
@@ -102,7 +102,7 @@ def make_copywriter_node(client: OpenAI, debug=False):
                 user_content = f"Conversation context:\n{qa_lines}\n\n{user_content}"
 
         t0 = time.time()
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},

@@ -1,6 +1,6 @@
 import json
 import time
-from openai import OpenAI
+from openai import AsyncOpenAI
 from agents.state import PostState
 
 # UPGRADE: swap gpt-4o-mini → gpt-4o for more accurate routing and style classification
@@ -45,8 +45,8 @@ Respond ONLY with a valid JSON object:
 }"""
 
 
-def make_director_node(client: OpenAI, debug=False):
-    def director_node(state: PostState) -> dict:
+def make_director_node(client: AsyncOpenAI, debug=False):
+    async def director_node(state: PostState) -> dict:
         print("\n💭 Understanding your vibe...")
 
         has_draft = bool(state.get("draft_content"))
@@ -68,7 +68,7 @@ def make_director_node(client: OpenAI, debug=False):
         messages.append({"role": "user", "content": user_content})
 
         t0 = time.time()
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=MODEL,
             messages=messages,
             response_format={"type": "json_object"},

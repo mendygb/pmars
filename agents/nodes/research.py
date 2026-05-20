@@ -1,12 +1,12 @@
-import os
-import json
 import asyncio
 import importlib.util
+import json
+import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from openai import AsyncOpenAI, OpenAI
 
 from agents.state import PostState
 
@@ -144,8 +144,17 @@ async def _get_place_details_async(place_name: str, api_key: str) -> str:
             return details_result.content[0].text if details_result.content else search_text
 
 
-def _get_place_details_sync(place_name: str, api_key: str) -> str:
-    return asyncio.run(_get_place_details_async(place_name, api_key))
+async def _fetch_url_async(url: str) -> str:
+    server_params = StdioServerParameters(
+        command="python",
+        args=["-m", "mcp_server_fetch"],
+        env={**os.environ, "NPM_CONFIG_LOGLEVEL": "silent"},
+    )
+    async with stdio_client(server_params) as (reader, writer):
+        async with ClientSession(reader, writer) as session:
+            await session.initialize()
+            result = await session.call_tool("fetch", arguments={"url": url})
+            return result.content[0].text if result.content else ""
 
 
 def _format_place_details(raw: str, place_name: str) -> str:
@@ -170,24 +179,6 @@ def _format_place_details(raw: str, place_name: str) -> str:
         return f"[Google Maps: {place_name}]\n{raw[:1000]}"
 
 
-async def _fetch_url_async(url: str) -> str:
-    server_params = StdioServerParameters(
-        command="python",
-        args=["-m", "mcp_server_fetch"],
-        env={**os.environ, "NPM_CONFIG_LOGLEVEL": "silent"},
-    )
-    async with stdio_client(server_params) as (reader, writer):
-        async with ClientSession(reader, writer) as session:
-            await session.initialize()
-            result = await session.call_tool("fetch", arguments={"url": url})
-            return result.content[0].text if result.content else ""
-
-
-def _fetch_url_sync(url: str) -> str:
-    # asyncio.run() is safe here — LangGraph invoke() runs in a sync context
-    return asyncio.run(_fetch_url_async(url))
-
-
 def _format_web_results(results: list) -> str:
     blocks = [f"[Web: {r['title']}]\n{r['content']}" for r in results if r.get("content")]
     if not blocks:
@@ -195,8 +186,8 @@ def _format_web_results(results: list) -> str:
     return "Reference material from the web:\n\n" + "\n\n".join(blocks)
 
 
-def make_research_node(client, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key="", debug=False):
-    def research_node(state: PostState) -> dict:
+def make_research_node(client: AsyncOpenAI, sync_client: OpenAI, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key="", debug=False):
+    async def research_node(state: PostState) -> dict:
         print("🔍 Finding inspiration...")
 
         # Build retrieval query from current input + recent history for richer semantic match
@@ -208,7 +199,7 @@ def make_research_node(client, tavily_client, index, posts_col, chunks_by_pid, c
 
         # Step 1: LLM decides which tool(s) to call
         t0 = time.time()
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -222,18 +213,29 @@ def make_research_node(client, tavily_client, index, posts_col, chunks_by_pid, c
 
         tool_calls = response.choices[0].message.tool_calls or []
 
-        # Step 2: Execute all tool calls in parallel — each is independent
-        def _execute_tool_call(tool_call):
+        # Step 2: Execute all tool calls concurrently — each is independent
+        async def _execute_tool_call_async(tool_call):
             fn_name = tool_call.function.name
             args = json.loads(tool_call.function.arguments)
             tool_query = args.get("query", query)
-            result = {"fn_name": fn_name, "context_part": None, "docs": [], "metrics": {}, "web_search_used": False, "debug_lines": [], "elapsed_ms": 0}
+            result = {
+                "fn_name": fn_name,
+                "context_part": None,
+                "docs": [],
+                "metrics": {},
+                "web_search_used": False,
+                "debug_lines": [],
+                "elapsed_ms": 0,
+            }
             t_tool = time.time()
+            loop = asyncio.get_running_loop()
 
             if fn_name == "retrieve_rag":
                 result["debug_lines"].append(f"[debug] → retrieve_rag(query='{tool_query}')")
-                final_docs, metrics = retrieve(
-                    index, client, posts_col, chunks_by_pid, cleaned_posts, tool_query
+                # retrieve() is sync (uses sync Pinecone + pymongo) — run in thread pool
+                final_docs, metrics = await loop.run_in_executor(
+                    None,
+                    lambda: retrieve(index, sync_client, posts_col, chunks_by_pid, cleaned_posts, tool_query),
                 )
                 result["docs"] = final_docs
                 result["metrics"] = metrics
@@ -244,7 +246,7 @@ def make_research_node(client, tavily_client, index, posts_col, chunks_by_pid, c
                 url = args.get("url", "")
                 result["debug_lines"].append(f"[debug] → fetch_url(url='{url}')")
                 try:
-                    page_content = _fetch_url_sync(url)
+                    page_content = await _fetch_url_async(url)
                     if page_content:
                         result["context_part"] = f"[Fetched page: {url}]\n{page_content[:3000]}"
                     result["debug_lines"].append(f"[debug] fetched {len(page_content)} chars from {url}")
@@ -255,7 +257,7 @@ def make_research_node(client, tavily_client, index, posts_col, chunks_by_pid, c
                 place_name = args.get("place_name", query)
                 result["debug_lines"].append(f"[debug] → get_place_details(place='{place_name}')")
                 try:
-                    raw = _get_place_details_sync(place_name, maps_api_key)
+                    raw = await _get_place_details_async(place_name, maps_api_key)
                     if raw:
                         formatted = _format_place_details(raw, place_name)
                         result["context_part"] = formatted
@@ -274,9 +276,13 @@ def make_research_node(client, tavily_client, index, posts_col, chunks_by_pid, c
             elif fn_name == "search_web":
                 result["web_search_used"] = True
                 result["debug_lines"].append(f"[debug] → search_web(query='{tool_query}')")
+                # tavily is sync — run in thread pool
                 # NOTE (project-specific): Tavily used as web fallback for out-of-corpus content.
                 # In a production app with a large corpus this would rarely be needed.
-                search_results = tavily_client.search(tool_query, max_results=3)
+                search_results = await loop.run_in_executor(
+                    None,
+                    lambda: tavily_client.search(tool_query, max_results=3),
+                )
                 web_context = _format_web_results(search_results.get("results", []))
                 if web_context:
                     result["context_part"] = web_context
@@ -286,9 +292,7 @@ def make_research_node(client, tavily_client, index, posts_col, chunks_by_pid, c
             return result
 
         t_parallel = time.time()
-        with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(_execute_tool_call, tc) for tc in tool_calls]
-            tool_results = [f.result() for f in futures]  # preserves tool_calls order
+        tool_results = await asyncio.gather(*[_execute_tool_call_async(tc) for tc in tool_calls])
         parallel_wall_ms = int((time.time() - t_parallel) * 1000)
 
         # Step 3: Merge results — keep RAG style reference separate from factual context

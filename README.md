@@ -37,6 +37,60 @@ Two main components:
 
 ---
 
+## Web App
+
+A browser UI on top of the agent pipeline — Firebase Auth, FastAPI backend (SSE streaming), React frontend.
+
+### Firebase setup (one-time)
+
+1. Create a project at [console.firebase.google.com](https://console.firebase.google.com)
+2. Authentication → Sign-in methods → enable **Google** and **Email/Password**
+3. Project Settings → General → Add web app → copy config → create `frontend/.env`:
+   ```
+   VITE_FIREBASE_API_KEY=
+   VITE_FIREBASE_AUTH_DOMAIN=
+   VITE_FIREBASE_PROJECT_ID=
+   VITE_FIREBASE_APP_ID=
+   ```
+   (Use `frontend/.env.example` as a template)
+4. Project Settings → Service Accounts → Generate new private key → save as `firebase-service-account.json` in the project root
+
+### User mapping
+
+Create `users.json` in the project root (gitignored — do not commit):
+```json
+{
+  "FIREBASE_UID_HERE": {
+    "local_uid": "user_001",
+    "display_name": "Alice",
+    "author_name": null
+  }
+}
+```
+Find your Firebase UID in the Firebase Console → Authentication → Users. Only UIDs listed here can access the app.
+
+> **Testing only.** `users.json` is a manual whitelist for local development. In production, replace this lookup with a real user database.
+
+### Running
+
+```bash
+# Terminal 1 — Backend (port 8000)
+python -m uvicorn main:app --reload --port 8000
+
+# Terminal 2 — Frontend (port 5173)
+cd frontend && npm install && npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173) → sign in → start chatting.
+
+### Architecture
+
+- **`main.py`** — FastAPI app: auth middleware (Firebase Admin SDK), SSE streaming chat endpoint, session CRUD
+- **`db.py`** — SQLite session storage (`sessions.db`, gitignored): stores full pipeline state per session per user
+- **`frontend/`** — React (Vite): Firebase Auth, SSE streaming chat UI, dev history page with debug panel
+
+---
+
 ## RAG Pipeline (`rag/`)
 
 Three scripts that build the retrieval index. Run them once in order. The corpus used here (24 Bay Area lifestyle posts) is an example — swap in your own posts to tailor the pipeline to any niche.

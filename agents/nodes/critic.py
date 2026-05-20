@@ -1,5 +1,7 @@
 import time
-from openai import OpenAI
+from openai import AsyncOpenAI
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 from agents.state import PostState
 
 # UPGRADE: swap gpt-4o-mini → gpt-4o for more nuanced critique and polished rewrites
@@ -19,8 +21,16 @@ Rules:
 - Output the final polished post only — no preamble, no "Here is the revised version:" """
 
 
-def make_critic_node(client: OpenAI, debug=False):
-    def critic_node(state: PostState) -> dict:
+def make_critic_node(client: AsyncOpenAI, debug=False):
+    llm = ChatOpenAI(
+        model=MODEL,
+        temperature=0.4,
+        max_tokens=600,
+        streaming=True,
+        api_key=client.api_key,
+    )
+
+    async def critic_node(state: PostState) -> dict:
         print("✨ Adding the finishing touches...")
 
         draft = state.get("draft_content", "")
@@ -30,19 +40,13 @@ def make_critic_node(client: OpenAI, debug=False):
 
         user_content = f"Post style: {style}\n\nDraft:\n{draft}"
         if facts_context:
-            # Fact-check against place details only — style reference not needed here
             user_content += f"\n\nPlace details (for fact-check only):\n{facts_context[:800]}"
 
         t0 = time.time()
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.4,
-            max_tokens=600,
-        )
+        response = await llm.ainvoke([
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(content=user_content),
+        ])
         llm_ms = int((time.time() - t0) * 1000)
 
         if debug:
@@ -50,10 +54,10 @@ def make_critic_node(client: OpenAI, debug=False):
             print(f"  LLM (review):   {llm_ms:>6} ms")
             print(f"─────────────────────────────────────────────────\n")
 
-        final_post = response.choices[0].message.content.strip()
+        final_post = response.content.strip()
         return {
             "final_post": final_post,
-            "suggestions": [],  # reserved for future structured critique output
+            "suggestions": [],
         }
 
     return critic_node

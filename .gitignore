@@ -1,5 +1,17 @@
 # secrets
 .env
+firebase-service-account.json
+
+# local user mapping (testing only — see README)
+users.json
+
+# sqlite session store
+sessions.db
+
+# frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
 
 # generated / intermediate files
 rag/cleaned_chunks.json

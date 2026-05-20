@@ -6,6 +6,11 @@ python-dotenv
 transformers
 torch
 langgraph
+langchain-openai
 tavily-python
 mcp
 mcp-server-fetch
+fastapi
+uvicorn[standard]
+firebase-admin
+httpx

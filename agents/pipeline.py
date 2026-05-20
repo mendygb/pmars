@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import json
@@ -5,7 +6,7 @@ import time
 import argparse
 import datetime
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 from pinecone import Pinecone
 from pymongo import MongoClient
 from tavily import TavilyClient
@@ -28,11 +29,11 @@ DB_NAME = "social_media_db"
 COLLECTION_NAME = "posts"
 
 
-def build_graph(client, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key="", debug=False):
-    director = make_director_node(client, debug=debug)
-    research = make_research_node(client, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key=maps_api_key, debug=debug)
-    copywriter = make_copywriter_node(client, debug=debug)
-    critic = make_critic_node(client, debug=debug)
+def build_graph(async_client: AsyncOpenAI, sync_client: OpenAI, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key="", debug=False):
+    director = make_director_node(async_client, debug=debug)
+    research = make_research_node(async_client, sync_client, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key=maps_api_key, debug=debug)
+    copywriter = make_copywriter_node(async_client, debug=debug)
+    critic = make_critic_node(async_client, debug=debug)
 
     graph = StateGraph(PostState)
     graph.add_node("director", director)
@@ -77,55 +78,15 @@ def save_transcript(turns: list, outputs_dir: str):
     print(f"\nTranscript saved to {path}")
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--debug", action="store_true", help="Print RAG retrieval metrics after each research step")
-    args = parser.parse_args()
-
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
-    maps_api_key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
-
-    pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
-    index = pc.Index(INDEX_NAME)
-
-    mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
-    posts_col = mongo_client[DB_NAME][COLLECTION_NAME]
-
-    rag_dir = os.path.join(os.path.dirname(__file__), "..", "rag")
-
-    with open(os.path.join(rag_dir, "cleaned_chunks.json"), encoding="utf-8") as f:
-        all_chunks = json.load(f)
-    chunks_by_pid = {}
-    for c in all_chunks:
-        chunks_by_pid.setdefault(c["pid"], []).append(c)
-
-    with open(os.path.join(rag_dir, "cleaned_posts.json"), encoding="utf-8") as f:
-        cleaned_posts = {p["pid"]: p for p in json.load(f)}
-
-    compiled = build_graph(client, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key=maps_api_key, debug=args.debug)
-
-    state: PostState = {
-        "user_input": "",
-        "style": "",
-        "location_info": {},
-        "draft_content": "",
-        "final_post": "",
-        "suggestions": [],
-        "history": [],
-        "next_node": "",
-        "needs_clarification": False,
-        "clarification_question": "",
-    }
-
-    outputs_dir = os.path.join(os.path.dirname(__file__), "outputs")
+async def _cli_loop(compiled, state, args, outputs_dir):
     transcript = []
 
     print("\n✨ Turn your experiences into posts. What's your story?")
     print("Type 'quit' or 'exit' to end.\n")
 
+    loop = asyncio.get_running_loop()
     while True:
-        user_input = input("You: ").strip()
+        user_input = (await loop.run_in_executor(None, input, "You: ")).strip()
         if not user_input:
             continue
         if user_input.lower() in ("quit", "exit"):
@@ -133,7 +94,7 @@ def main():
 
         state["user_input"] = user_input
         t_start = time.time()
-        state = compiled.invoke(state)
+        state = await compiled.ainvoke(state)
         total_ms = int((time.time() - t_start) * 1000)
 
         turn_record = {"user_input": user_input, "style": state.get("style", "")}
@@ -159,7 +120,52 @@ def main():
         transcript.append(turn_record)
 
     if transcript:
-        save_transcript(transcript, outputs_dir)
+        save_transcript(transcript, os.path.join(os.path.dirname(__file__), "outputs"))
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--debug", action="store_true", help="Print RAG retrieval metrics after each research step")
+    args = parser.parse_args()
+
+    async_client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    sync_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+    maps_api_key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+
+    pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
+    index = pc.Index(INDEX_NAME)
+
+    mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
+    posts_col = mongo_client[DB_NAME][COLLECTION_NAME]
+
+    rag_dir = os.path.join(os.path.dirname(__file__), "..", "rag")
+
+    with open(os.path.join(rag_dir, "cleaned_chunks.json"), encoding="utf-8") as f:
+        all_chunks = json.load(f)
+    chunks_by_pid = {}
+    for c in all_chunks:
+        chunks_by_pid.setdefault(c["pid"], []).append(c)
+
+    with open(os.path.join(rag_dir, "cleaned_posts.json"), encoding="utf-8") as f:
+        cleaned_posts = {p["pid"]: p for p in json.load(f)}
+
+    compiled = build_graph(async_client, sync_client, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key=maps_api_key, debug=args.debug)
+
+    state: PostState = {
+        "user_input": "",
+        "style": "",
+        "location_info": {},
+        "draft_content": "",
+        "final_post": "",
+        "suggestions": [],
+        "history": [],
+        "next_node": "",
+        "needs_clarification": False,
+        "clarification_question": "",
+    }
+
+    asyncio.run(_cli_loop(compiled, state, args, os.path.join(os.path.dirname(__file__), "outputs")))
 
 
 if __name__ == "__main__":
