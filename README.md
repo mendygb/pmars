@@ -116,7 +116,7 @@ python rag/03_rag_query.py           # interactive single-LLM post writer (basel
 
 ## Multi-Agent Pipeline (`agents/`)
 
-A LangGraph-powered pipeline that coordinates 4 specialized agents to produce higher-quality posts.
+A LangGraph-powered pipeline that coordinates 5 specialized agents to produce higher-quality posts.
 
 ```bash
 python agents/pipeline.py
@@ -132,7 +132,8 @@ python agents/pipeline.py --debug
 | **Director** | Entry point for every turn. Classifies post style, detects if more info is needed, and routes to the right agents. On refinement turns, decides which agents to re-run. |
 | **Research** | LLM-driven tool selection agent. Picks and runs the right tools in parallel, then merges results. |
 | **Copywriter** | Writes the draft using style constraints, place facts, and style references. |
-| **SEO & Critic** | Reviews the draft for hook strength, clichés, and hashtags — outputs the final polished post. |
+| **Safety Check** | Fast pass/fail content classification (local HuggingFace model). Blocks unsafe drafts before streaming starts. |
+| **Critic** | Reviews the draft for hook strength, clichés, and hashtags — streams the final polished post via SSE. |
 
 ### Research Tools
 
@@ -164,11 +165,11 @@ User input
     ↓
 [Director] — classifies style, decides routing
     ↓
-[Research] → [Copywriter] → [SEO & Critic]   ← first post
+[Research] → [Copywriter] → [Safety Check] → [Critic]   ← first post
                   ↑
     Director skips agents that don't need to re-run on refinement turns:
-    - tone/style change   → Copywriter → Critic
-    - new detail/info     → Research → Copywriter → Critic
+    - tone/style change   → Copywriter → Safety Check → Critic
+    - new detail/info     → Research → Copywriter → Safety Check → Critic
     - hashtag/hook fix    → Critic only
 ```
 
