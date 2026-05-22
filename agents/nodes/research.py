@@ -1,10 +1,13 @@
 import asyncio
 import importlib.util
 import json
+import logging
 import os
 import time
 
 from mcp import ClientSession, StdioServerParameters
+
+logger = logging.getLogger(__name__)
 from mcp.client.stdio import stdio_client
 from openai import AsyncOpenAI, OpenAI
 
@@ -186,9 +189,62 @@ def _format_web_results(results: list) -> str:
     return "Reference material from the web:\n\n" + "\n\n".join(blocks)
 
 
+# HARDCODED: in production, replace with a real async HTTP call to the internal MP service:
+#   GET /internal/users/{media_id}/posts?sort=likes&limit=5
+# The MP service returns the user's popular published posts, which are used as a
+# personalised style reference — closer to this user's voice than the community RAG corpus.
+_PERSONAL_POSTS_STUB = [
+    {
+        "content": (
+            "在 Sightglass Coffee 度过了一个慵懒的周日下午 ☕\n"
+            "阳光穿过工业风的落地窗，洒在粗糙的木质桌面上。\n"
+            "点了一杯 pour over，入口有淡淡的花香和柑橘尾韵。\n"
+            "就这样坐着，发了一会儿呆，什么都不想做，也不需要做。\n"
+            "#SanFrancisco #CoffeeTime #SightglassCoffee #慢生活 #湾区日常"
+        ),
+        "likes": 312,
+    },
+    {
+        "content": (
+            "第一次去 Tartine Bakery，排了 40 分钟队。\n"
+            "值得吗？Country bread 刚出炉，外皮焦脆，内芯湿润有嚼劲，\n"
+            "抹上半融的黄油，简单到不像话，好吃到说不出话。\n"
+            "下次早点来，据说 5 点就开始排了。\n"
+            "#TartineBakery #SanFrancisco #MissionDistrict #面包控 #湾区美食"
+        ),
+        "likes": 487,
+    },
+    {
+        "content": (
+            "Lands End Trail，黄昏时分。\n"
+            "雾从金门大桥那边漫过来，把桥墩一点一点吞掉。\n"
+            "脚下是碎石路，旁边是悬崖，风很大，头发乱成一团。\n"
+            "但那一刻真的觉得，能住在湾区太好了。\n"
+            "#LandsEnd #SanFrancisco #HikingBay #日落 #湾区户外"
+        ),
+        "likes": 623,
+    },
+]
+
+
+async def _get_personal_style_async(media_id: str) -> str:
+    """Fetch user's popular posts as personalised style reference.
+
+    HARDCODED stub — production version calls:
+      GET /internal/users/{media_id}/posts?sort=likes&limit=5
+    and formats the response the same way.
+    """
+    if not media_id:
+        return ""
+    posts = _PERSONAL_POSTS_STUB  # swap for real MP service response in production
+    blocks = [f"[Personal post — {p['likes']} likes]\n{p['content']}" for p in posts]
+    # Cap at 700 chars so community RAG always gets at least ~800 chars of the 1500 limit
+    return ("User's own popular posts (personalised style reference):\n\n" + "\n\n".join(blocks))[:700]
+
+
 def make_research_node(client: AsyncOpenAI, sync_client: OpenAI, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key="", debug=False):
     async def research_node(state: PostState) -> dict:
-        print("🔍 Finding inspiration...")
+        logger.info("🔍 Finding inspiration...")
 
         # Build retrieval query from current input + recent history for richer semantic match
         query_parts = [state["user_input"]]
@@ -197,17 +253,20 @@ def make_research_node(client: AsyncOpenAI, sync_client: OpenAI, tavily_client, 
                 query_parts.append(turn["content"])
         query = " ".join(query_parts)
 
-        # Step 1: LLM decides which tool(s) to call
+        # Step 1: LLM tool selection + personal style fetch run concurrently
         t0 = time.time()
-        response = await client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Gather research for writing a post about: {query}"}
-            ],
-            tools=TOOLS,
-            tool_choice="required",  # must call at least one tool
-            temperature=0,
+        response, personal_style = await asyncio.gather(
+            client.chat.completions.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Gather research for writing a post about: {query}"}
+                ],
+                tools=TOOLS,
+                tool_choice="required",  # must call at least one tool
+                temperature=0,
+            ),
+            _get_personal_style_async(state.get("media_id", "")),
         )
         tool_selection_ms = int((time.time() - t0) * 1000)
 
@@ -302,10 +361,14 @@ def make_research_node(client: AsyncOpenAI, sync_client: OpenAI, tavily_client, 
         rag_metrics = {}
         web_search_used = False
 
+        # Personal posts take priority — prepend so Copywriter sees them first
+        if personal_style:
+            style_parts.append(personal_style)
+
         for r in tool_results:
             if debug:
                 for line in r["debug_lines"]:
-                    print(line)
+                    logger.debug(line)
             combined_docs.extend(r["docs"])
             if r["context_part"]:
                 if r["fn_name"] == "retrieve_rag":
@@ -326,20 +389,21 @@ def make_research_node(client: AsyncOpenAI, sync_client: OpenAI, tavily_client, 
                             rag_metrics.get(k, 0)
                             for k in ("embed_ms", "vector_search_ms", "tag_search_ms", "rrf_ms")
                         )
-                        print("\n" + format_metrics(rag_metrics) + "\n")
+                        logger.debug("\n" + format_metrics(rag_metrics))
                     except Exception as e:
-                        print(f"[debug] RAG metrics unavailable: {e}")
-                        print(f"[debug] raw metrics: {rag_metrics}\n")
+                        logger.debug(f"RAG metrics unavailable: {e}")
+                        logger.debug(f"raw metrics: {rag_metrics}")
             web_search_used = web_search_used or r["web_search_used"]
 
         if debug:
-            print(f"\n── Research timing ──────────────────────────────")
-            print(f"  tool selection:  {tool_selection_ms:>6} ms")
-            for r in tool_results:
-                print(f"  {r['fn_name']:<20} {r['elapsed_ms']:>6} ms")
-            if len(tool_results) > 1:
-                print(f"  wall-clock:      {parallel_wall_ms:>6} ms  (parallel)")
-            print(f"────────────────────────────────────────────────\n")
+            tool_timing = "\n".join(f"  {r['fn_name']:<20} {r['elapsed_ms']:>6} ms" for r in tool_results)
+            wall = f"\n  wall-clock:      {parallel_wall_ms:>6} ms  (parallel)" if len(tool_results) > 1 else ""
+            logger.debug(
+                f"\n── Research timing ──────────────────────────────\n"
+                f"  tool selection:  {tool_selection_ms:>6} ms\n"
+                f"{tool_timing}{wall}\n"
+                "────────────────────────────────────────────────"
+            )
 
         return {
             "location_info": {
@@ -348,6 +412,7 @@ def make_research_node(client: AsyncOpenAI, sync_client: OpenAI, tavily_client, 
                 "facts_context": "\n\n".join(facts_parts),
                 "metrics": rag_metrics,
                 "web_search_used": web_search_used,
+                "personal_style_chars": len(personal_style),
             }
         }
 

@@ -1,8 +1,11 @@
+import logging
 import time
 from openai import AsyncOpenAI
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from agents.state import PostState
+
+logger = logging.getLogger(__name__)
 
 # UPGRADE: swap gpt-4o-mini → gpt-4o for more nuanced critique and polished rewrites
 MODEL = "gpt-4o-mini"
@@ -31,7 +34,7 @@ def make_critic_node(client: AsyncOpenAI, debug=False):
     )
 
     async def critic_node(state: PostState) -> dict:
-        print("✨ Adding the finishing touches...")
+        logger.info("✨ Adding the finishing touches...")
 
         draft = state.get("draft_content", "")
         style = state.get("style", "freeform")
@@ -50,9 +53,11 @@ def make_critic_node(client: AsyncOpenAI, debug=False):
         llm_ms = int((time.time() - t0) * 1000)
 
         if debug:
-            print(f"\n── Critic ───────────────────────────────────────")
-            print(f"  LLM (review):   {llm_ms:>6} ms")
-            print(f"─────────────────────────────────────────────────\n")
+            logger.debug(
+                f"\n── Critic ───────────────────────────────────────\n"
+                f"  LLM (review):   {llm_ms:>6} ms\n"
+                "─────────────────────────────────────────────────"
+            )
 
         final_post = response.content.strip()
         return {

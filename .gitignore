@@ -34,3 +34,6 @@ temp.txt
 .vscode/
 .claude/
 CLAUDE.md
+
+# private docs (local only)
+_private/

@@ -1,0 +1,26 @@
+# Secrets — must never be baked into the image
+.env
+firebase-service-account.json
+users.json
+
+# Local runtime state
+sessions.db
+
+# Dev tooling
+.git/
+.gitignore
+.claude/
+.vscode/
+_private/
+README.md
+
+# Python bytecode
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Pipeline outputs (generated at runtime, not needed at build time)
+agents/outputs/
+rag/outputs/
+rag/test/

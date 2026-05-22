@@ -13,3 +13,6 @@ class PostState(TypedDict):
     next_node: str         # Director's routing: "research" | "copywriter" | "critic" | "ask_user"
     needs_clarification: bool
     clarification_question: str
+    safety_passed: bool
+    media_id: str
+    user_profile_injected: bool

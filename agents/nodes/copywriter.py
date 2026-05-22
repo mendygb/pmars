@@ -1,6 +1,9 @@
+import logging
 import time
 from openai import AsyncOpenAI
 from agents.state import PostState
+
+logger = logging.getLogger(__name__)
 
 # UPGRADE: swap gpt-4o-mini → gpt-4o for richer, more platform-native writing
 MODEL = "gpt-4o-mini"
@@ -56,15 +59,35 @@ Style-specific rules for this post (override with user's explicit format request
 {style_guide}"""
 
 
+# HARDCODED: in production, fetched from MongoDB user_profiles collection by media_id.
+# Offline batch pipeline aggregates this from the user's published posts (nightly/weekly).
+_USER_PROFILE_STUB = {
+    "preferred_style": "diary",
+    "avg_word_count": 130,
+    "opener_type": "scene-setting",
+    "emoji_density": "low",
+}
+
+
+def _format_user_profile(profile: dict) -> str:
+    return (
+        f"[User voice profile — calibrate to their established style]\n"
+        f"Style: {profile['preferred_style']}, ~{profile['avg_word_count']} words, "
+        f"opens with {profile['opener_type']}, emoji density: {profile['emoji_density']}."
+    )
+
+
 def make_copywriter_node(client: AsyncOpenAI, debug=False):
     async def copywriter_node(state: PostState) -> dict:
-        print("✍️  Writing your post...")
+        logger.info("✍️  Writing your post...")
+
+        is_refinement = bool(state.get("draft_content"))
 
         style = state.get("style", "freeform")
         style_guide = STYLE_GUIDELINES.get(style, STYLE_GUIDELINES["freeform"])
         system_prompt = BASE_SYSTEM_PROMPT.format(style_guide=style_guide)
-
-        is_refinement = bool(state.get("draft_content"))
+        if state.get("media_id") and not is_refinement:
+            system_prompt += "\n\n" + _format_user_profile(_USER_PROFILE_STUB)
         loc = state.get("location_info", {})
         # Style reference (RAG posts) — capped to limit input tokens
         style_context = loc.get("style_context", "")[:1500]
@@ -114,9 +137,11 @@ def make_copywriter_node(client: AsyncOpenAI, debug=False):
         llm_ms = int((time.time() - t0) * 1000)
 
         if debug:
-            print(f"\n── Copywriter ───────────────────────────────────")
-            print(f"  LLM (writing):  {llm_ms:>6} ms")
-            print(f"─────────────────────────────────────────────────\n")
+            logger.debug(
+                f"\n── Copywriter ───────────────────────────────────\n"
+                f"  LLM (writing):  {llm_ms:>6} ms\n"
+                "─────────────────────────────────────────────────"
+            )
 
         draft = response.choices[0].message.content.strip()
         return {"draft_content": draft}

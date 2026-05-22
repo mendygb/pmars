@@ -1,7 +1,10 @@
 import json
+import logging
 import time
 from openai import AsyncOpenAI
 from agents.state import PostState
+
+logger = logging.getLogger(__name__)
 
 # UPGRADE: swap gpt-4o-mini → gpt-4o for more accurate routing and style classification
 MODEL = "gpt-4o-mini"
@@ -31,7 +34,8 @@ SYSTEM_PROMPT = """You are the Director of a social media post-writing pipeline.
 - Anything else unclear → route to copywriter (safest default)
 
 **New post after refinement (existing draft present but user describes a brand-new experience or place):**
-- Signals: "I went to X", "write about X", "not the post I want, I want one about X", "different place", describing somewhere that wasn't in the original request
+- Explicit signals: "I went to X", "write about X", "not the post I want, I want one about X", "different place", describing somewhere that wasn't in the original request
+- Location change signal: refinement message names a place clearly different from the draft's location — even without saying "new post" — treat as is_new_post = true and route to research
 - Set is_new_post to true AND next_node to "research" — this resets the draft and retrieves fresh context
 
 ## Output Format
@@ -47,7 +51,7 @@ Respond ONLY with a valid JSON object:
 
 def make_director_node(client: AsyncOpenAI, debug=False):
     async def director_node(state: PostState) -> dict:
-        print("\n💭 Understanding your vibe...")
+        logger.info("💭 Understanding your vibe...")
 
         has_draft = bool(state.get("draft_content"))
 
@@ -79,13 +83,15 @@ def make_director_node(client: AsyncOpenAI, debug=False):
         decision = json.loads(response.choices[0].message.content)
 
         if debug:
-            print(f"\n── Director ─────────────────────────────────────")
-            print(f"  style:          {decision.get('style')}")
-            print(f"  next_node:      {decision.get('next_node')}")
-            print(f"  is_new_post:    {decision.get('is_new_post')}")
-            print(f"  clarification:  {decision.get('needs_clarification')} → {decision.get('clarification_question')}")
-            print(f"  LLM (routing):  {llm_ms:>6} ms")
-            print(f"─────────────────────────────────────────────────\n")
+            logger.debug(
+                "\n── Director ─────────────────────────────────────\n"
+                f"  style:          {decision.get('style')}\n"
+                f"  next_node:      {decision.get('next_node')}\n"
+                f"  is_new_post:    {decision.get('is_new_post')}\n"
+                f"  clarification:  {decision.get('needs_clarification')} → {decision.get('clarification_question')}\n"
+                f"  LLM (routing):  {llm_ms:>6} ms\n"
+                "─────────────────────────────────────────────────"
+            )
 
         needs_clarification = decision.get("needs_clarification", False)
 
@@ -95,6 +101,7 @@ def make_director_node(client: AsyncOpenAI, debug=False):
             "next_node": "ask_user" if needs_clarification else decision.get("next_node", "research"),
             "needs_clarification": needs_clarification,
             "clarification_question": decision.get("clarification_question") or "",
+            "user_profile_injected": bool(state.get("media_id")),
         }
 
         # Reset draft and location if the user is starting a brand-new post

@@ -1,9 +1,20 @@
 import json
+import logging
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+
+# Uvicorn configures its own loggers but leaves the root logger without a handler,
+# so agent pipeline logs would silently drop. Attach a handler to the agents namespace.
+_agent_logger = logging.getLogger("agents")
+_agent_logger.setLevel(logging.INFO)
+if not _agent_logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(levelname)-8s %(name)s — %(message)s"))
+    _agent_logger.addHandler(_h)
 
 import firebase_admin
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -15,6 +26,7 @@ from pinecone import Pinecone
 from pymongo import MongoClient
 from pydantic import BaseModel
 from tavily import TavilyClient
+from transformers import pipeline as hf_pipeline
 
 from dotenv import load_dotenv
 
@@ -24,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agents.pipeline import build_graph
 from agents.state import PostState
-from db import create_session, delete_session, get_session, get_session_detail, init_db, list_sessions, save_session
+from db import complete_session, create_session, delete_session, get_session, get_session_detail, init_db, list_sessions, save_session
 
 # Keys that LangGraph knows about — strip everything else before passing state in
 _POSTSTATE_KEYS = set(PostState.__annotations__.keys())
@@ -32,6 +44,7 @@ _POSTSTATE_KEYS = set(PostState.__annotations__.keys())
 # ── Globals populated at startup ──────────────────────────────────────────────
 compiled = None
 USER_MAP: dict = {}
+completed_sessions_col = None
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -39,6 +52,7 @@ class ChatRequest(BaseModel):
     user_input: str
     session_id: str
     debug: bool = False
+    display_input: str = ""  # clean version saved to history; falls back to user_input
 
 
 class NewSessionResponse(BaseModel):
@@ -62,6 +76,19 @@ class SessionListResponse(BaseModel):
     sessions: list[SessionSummary]
 
 
+class GenerateTitleRequest(BaseModel):
+    content: str = ""
+    title: str = ""
+
+
+class NewSessionRequest(BaseModel):
+    draft_content: str = ""
+
+
+class CompleteSessionRequest(BaseModel):
+    final_content: str
+
+
 class DebugInfo(BaseModel):
     style: str
     next_node: str
@@ -83,7 +110,7 @@ class SessionDetailResponse(BaseModel):
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global compiled, USER_MAP
+    global compiled, USER_MAP, completed_sessions_col
 
     # Firebase Admin SDK
     sa_path = os.environ.get("FIREBASE_SERVICE_ACCOUNT_KEY_PATH", "./firebase-service-account.json")
@@ -113,6 +140,7 @@ async def lifespan(app: FastAPI):
 
     mongo_client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=2000)
     posts_col = mongo_client["social_media_db"]["posts"]
+    completed_sessions_col = mongo_client["social_media_db"]["completed_sessions"]
 
     rag_dir = os.path.join(os.path.dirname(__file__), "rag")
     with open(os.path.join(rag_dir, "cleaned_chunks.json")) as f:
@@ -123,10 +151,13 @@ async def lifespan(app: FastAPI):
     with open(os.path.join(rag_dir, "cleaned_posts.json")) as f:
         cleaned_posts = {p["pid"]: p for p in json.load(f)}
 
+    safety_classifier = hf_pipeline("text-classification", model="KoalaAI/Text-Moderation")
+
     compiled = build_graph(
         async_client, sync_client, tavily_client,
         index, posts_col, chunks_by_pid, cleaned_posts,
         maps_api_key=maps_api_key,
+        safety_classifier=safety_classifier,
     )
 
     yield
@@ -165,9 +196,28 @@ async def health():
     return HealthResponse(status="ok")
 
 
+@app.post("/api/generate-title")
+async def generate_title(req: GenerateTitleRequest, user: dict = Depends(get_current_user)):
+    if not req.content and not req.title:
+        raise HTTPException(400, "Provide content or title")
+    if req.content:
+        prompt = f"Write a short, catchy title (3-6 words) for this social media post. Output only the title, no quotes or punctuation:\n\n{req.content[:600]}"
+    else:
+        prompt = f"Rephrase this title to be more engaging. Keep it short (3-6 words). Output only the title, no quotes or punctuation:\n\n{req.title}"
+    client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=20,
+        temperature=0.7,
+    )
+    return {"title": response.choices[0].message.content.strip().strip('"\'')}
+
+
 @app.post("/api/sessions/new", response_model=NewSessionResponse)
-async def new_session(user: dict = Depends(get_current_user)):
-    session_id = create_session(user["local_uid"])
+async def new_session(user: dict = Depends(get_current_user), req: NewSessionRequest = None):
+    draft = req.draft_content if req else ""
+    session_id = create_session(user["local_uid"], draft_content=draft)
     return NewSessionResponse(session_id=session_id, local_uid=user["local_uid"])
 
 
@@ -207,10 +257,12 @@ async def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
                 node_key = lg_node if lg_node in NODE_STATUS else (name if name in NODE_STATUS else "")
 
 
-                if kind == "on_chain_start" and node_key and node_key not in status_sent:
-                    status_sent.add(node_key)
-                    node_start_times[node_key] = time.monotonic()
-                    yield _sse({"type": "status", "message": NODE_STATUS[node_key]})
+                if kind == "on_chain_start" and lg_node:
+                    node_start_times[lg_node] = time.monotonic()
+                    # Emit status bubble only for nodes that have a user-facing message
+                    if node_key and node_key not in status_sent:
+                        status_sent.add(node_key)
+                        yield _sse({"type": "status", "message": NODE_STATUS[node_key]})
 
                 # Critic uses ChatOpenAI → real streaming tokens
                 elif kind == "on_chat_model_stream" and lg_node == "critic":
@@ -223,23 +275,25 @@ async def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
                     post_sent = True
                     yield _sse({"type": "message_end"})
 
-                elif kind == "on_chain_end" and node_key:
+                # Process all LangGraph nodes — not gated on NODE_STATUS membership
+                elif kind == "on_chain_end" and lg_node:
                     output = ev["data"].get("output", {})
                     if not isinstance(output, dict):
                         continue
 
-                    if node_key in node_start_times:
-                        node_timings[node_key] = round((time.monotonic() - node_start_times[node_key]) * 1000)
+                    if lg_node in node_start_times:
+                        node_timings[lg_node] = round((time.monotonic() - node_start_times[lg_node]) * 1000)
 
                     state.update(output)
 
                     if req.debug:
-                        yield _sse({"type": "debug", "node": node_key, "payload": _sanitize(output)})
+                        yield _sse({"type": "debug", "node": lg_node, "payload": _sanitize(output)})
 
                     # Fallback for non-streaming nodes that produce a final_post
                     if output.get("final_post") and not post_sent:
                         post_sent = True
-                        yield _sse({"type": "message", "content": output["final_post"]})
+                        is_error = not state.get("safety_passed", True)
+                        yield _sse({"type": "message", "content": output["final_post"], "is_error": is_error})
 
                     # Director asking for clarification
                     if output.get("needs_clarification") and not clarification_sent:
@@ -249,11 +303,12 @@ async def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
             total_ms = round((time.monotonic() - pipeline_start) * 1000)
             state["_timings"] = {"total_ms": total_ms, **node_timings}
 
+            history_user_content = req.display_input or req.user_input
             if state.get("needs_clarification"):
-                state["history"].append({"role": "user", "content": req.user_input})
+                state["history"].append({"role": "user", "content": history_user_content})
                 state["history"].append({"role": "assistant", "content": state["clarification_question"]})
             elif state.get("final_post"):
-                state["history"].append({"role": "user", "content": req.user_input})
+                state["history"].append({"role": "user", "content": history_user_content})
                 state["history"].append({"role": "assistant", "content": state["final_post"]})
 
             save_session(req.session_id, user["local_uid"], state)
@@ -286,6 +341,17 @@ async def session_detail(session_id: str, user: dict = Depends(get_current_user)
     except KeyError as e:
         raise HTTPException(404, str(e))
     return SessionDetailResponse(**detail)
+
+
+@app.post("/api/sessions/{session_id}/complete", status_code=204)
+async def session_complete(session_id: str, req: CompleteSessionRequest, user: dict = Depends(get_current_user)):
+    if completed_sessions_col is None:
+        raise HTTPException(503, "MongoDB not available")
+    try:
+        state = get_session(session_id, user["local_uid"])
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    complete_session(session_id, user["local_uid"], req.final_content, state, completed_sessions_col)
 
 
 def _sse(data: dict) -> str:

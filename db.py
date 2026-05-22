@@ -16,6 +16,9 @@ FRESH_STATE = {
     "next_node": "",
     "needs_clarification": False,
     "clarification_question": "",
+    "safety_passed": True,
+    "media_id": "",
+    "user_profile_injected": False,
 }
 
 
@@ -33,12 +36,15 @@ def init_db():
     conn.close()
 
 
-def create_session(local_uid: str) -> str:
+def create_session(local_uid: str, draft_content: str = "") -> str:
     session_id = str(uuid.uuid4())
+    # local_uid == media_id on the media platform — concat at session creation so all
+    # downstream nodes (Research, Director, Copywriter) can read it from state
+    fresh = {**FRESH_STATE, "media_id": local_uid, "draft_content": draft_content}
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
         "INSERT INTO sessions (session_id, local_uid, state_json) VALUES (?, ?, ?)",
-        (session_id, local_uid, json.dumps(FRESH_STATE)),
+        (session_id, local_uid, json.dumps(fresh)),
     )
     conn.commit()
     conn.close()
@@ -93,6 +99,19 @@ def list_sessions(local_uid: str) -> list[dict]:
             "preview": user_turns[0]["content"][:80],
         })
     return result
+
+
+def complete_session(session_id: str, local_uid: str, final_content: str, state: dict, col) -> None:
+    """Archive session to MongoDB completed_sessions and remove it from SQLite."""
+    col.insert_one({
+        "session_id": session_id,
+        "local_uid": local_uid,
+        "history": state.get("history", []),
+        "style": state.get("style", ""),
+        "final_content": final_content,
+        "completed_at": datetime.utcnow().isoformat(),
+    })
+    delete_session(session_id, local_uid)
 
 
 def delete_session(session_id: str, local_uid: str):

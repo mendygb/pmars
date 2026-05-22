@@ -81,13 +81,13 @@ python -m uvicorn main:app --reload --port 8000
 cd frontend && npm install && npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) → sign in → start chatting.
+Open [http://localhost:5173](http://localhost:5173) → sign in → fill in location/title/content → click **Write with AI** → chat with the pipeline → click **Apply** to bring the draft back to the editing page.
 
 ### Architecture
 
-- **`main.py`** — FastAPI app: auth middleware (Firebase Admin SDK), SSE streaming chat endpoint, session CRUD
-- **`db.py`** — SQLite session storage (`sessions.db`, gitignored): stores full pipeline state per session per user
-- **`frontend/`** — React (Vite): Firebase Auth, SSE streaming chat UI, dev history page with debug panel
+- **`main.py`** — FastAPI app: Firebase Auth middleware, SSE streaming chat endpoint, session CRUD, title generation endpoint
+- **`db.py`** — SQLite session storage (`sessions.db`, gitignored): stores full pipeline state per session per user; completed sessions are archived to MongoDB on Apply
+- **`frontend/`** — React (Vite): Firebase Auth, EditingPage (location/title/content form with AI title generation), Chat sub-view (auto-send, Apply button per draft), dev history page with debug panel
 
 ---
 

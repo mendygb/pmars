@@ -1,15 +1,19 @@
 import asyncio
+import logging
 import os
 import sys
 import json
 import time
 import argparse
 import datetime
+
+logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 from openai import AsyncOpenAI, OpenAI
 from pinecone import Pinecone
 from pymongo import MongoClient
 from tavily import TavilyClient
+from transformers import pipeline as hf_pipeline
 from langgraph.graph import StateGraph, END
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
@@ -21,6 +25,7 @@ from agents.state import PostState
 from agents.nodes.director import make_director_node
 from agents.nodes.research import make_research_node
 from agents.nodes.copywriter import make_copywriter_node
+from agents.nodes.safety_check import make_safety_check_node
 from agents.nodes.critic import make_critic_node
 
 INDEX_NAME = "pmars-social-posts"
@@ -29,16 +34,18 @@ DB_NAME = "social_media_db"
 COLLECTION_NAME = "posts"
 
 
-def build_graph(async_client: AsyncOpenAI, sync_client: OpenAI, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key="", debug=False):
+def build_graph(async_client: AsyncOpenAI, sync_client: OpenAI, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key="", safety_classifier=None, debug=False):
     director = make_director_node(async_client, debug=debug)
     research = make_research_node(async_client, sync_client, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key=maps_api_key, debug=debug)
     copywriter = make_copywriter_node(async_client, debug=debug)
+    safety_check = make_safety_check_node(safety_classifier, debug=debug)
     critic = make_critic_node(async_client, debug=debug)
 
     graph = StateGraph(PostState)
     graph.add_node("director", director)
     graph.add_node("research", research)
     graph.add_node("copywriter", copywriter)
+    graph.add_node("safety_check", safety_check)
     graph.add_node("critic", critic)
 
     graph.set_entry_point("director")
@@ -56,7 +63,13 @@ def build_graph(async_client: AsyncOpenAI, sync_client: OpenAI, tavily_client, i
     )
 
     graph.add_edge("research", "copywriter")
-    graph.add_edge("copywriter", "critic")
+    graph.add_edge("copywriter", "safety_check")
+    # Safety gate: blocked drafts set final_post and skip Critic entirely
+    graph.add_conditional_edges(
+        "safety_check",
+        lambda state: "critic" if state.get("safety_passed", True) else "end",
+        {"critic": "critic", "end": END},
+    )
     graph.add_edge("critic", END)
 
     return graph.compile()
@@ -100,9 +113,11 @@ async def _cli_loop(compiled, state, args, outputs_dir):
         turn_record = {"user_input": user_input, "style": state.get("style", "")}
 
         if args.debug:
-            print(f"── Total ─────────────────────────────────────────")
-            print(f"  {total_ms:>6} ms")
-            print(f"─────────────────────────────────────────────────\n")
+            logger.debug(
+                f"\n── Total ─────────────────────────────────────────\n"
+                f"  {total_ms:>6} ms\n"
+                "─────────────────────────────────────────────────"
+            )
 
         if state.get("needs_clarification"):
             print(f"\nDirector: {state['clarification_question']}\n")
@@ -128,6 +143,11 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Print RAG retrieval metrics after each research step")
     args = parser.parse_args()
 
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(levelname)-8s %(name)s — %(message)s",
+    )
+
     async_client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
     sync_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
@@ -150,7 +170,10 @@ def main():
     with open(os.path.join(rag_dir, "cleaned_posts.json"), encoding="utf-8") as f:
         cleaned_posts = {p["pid"]: p for p in json.load(f)}
 
-    compiled = build_graph(async_client, sync_client, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key=maps_api_key, debug=args.debug)
+    logger.info("Loading safety classifier...")
+    safety_classifier = hf_pipeline("text-classification", model="KoalaAI/Text-Moderation")
+
+    compiled = build_graph(async_client, sync_client, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key=maps_api_key, safety_classifier=safety_classifier, debug=args.debug)
 
     state: PostState = {
         "user_input": "",
@@ -163,6 +186,8 @@ def main():
         "next_node": "",
         "needs_clarification": False,
         "clarification_question": "",
+        "safety_passed": True,
+        "media_id": "",
     }
 
     asyncio.run(_cli_loop(compiled, state, args, os.path.join(os.path.dirname(__file__), "outputs")))

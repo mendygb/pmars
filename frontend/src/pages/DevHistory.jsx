@@ -185,7 +185,7 @@ export default function DevHistory({ user, onBack }) {
                             {detail.debug.timings.total_ms !== undefined && (
                               <DebugRow label="Total" value={`${detail.debug.timings.total_ms} ms`} />
                             )}
-                            {['director', 'research', 'copywriter', 'critic'].map((node) =>
+                            {['director', 'research', 'copywriter', 'safety_check', 'critic'].map((node) =>
                               detail.debug.timings[node] !== undefined ? (
                                 <DebugRow key={node} label={node} value={`${detail.debug.timings[node]} ms`} />
                               ) : null
