@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -36,7 +37,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agents.pipeline import build_graph
 from agents.state import PostState
-from db import complete_session, create_session, delete_session, get_session, get_session_detail, init_db, list_sessions, save_session
+from db import (check_cancel, clear_cancel, complete_session, create_session,
+                delete_session, get_session, get_session_detail, init_db,
+                list_sessions, save_session, set_cancel)
 
 # Keys that LangGraph knows about — strip everything else before passing state in
 _POSTSTATE_KEYS = set(PostState.__annotations__.keys())
@@ -45,6 +48,7 @@ _POSTSTATE_KEYS = set(PostState.__annotations__.keys())
 compiled = None
 USER_MAP: dict = {}
 completed_sessions_col = None
+injection_classifier = None
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -70,6 +74,7 @@ class SessionSummary(BaseModel):
     turn_count: int
     style: str
     preview: str
+    completed: bool = False
 
 
 class SessionListResponse(BaseModel):
@@ -110,7 +115,7 @@ class SessionDetailResponse(BaseModel):
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global compiled, USER_MAP, completed_sessions_col
+    global compiled, USER_MAP, completed_sessions_col, injection_classifier
 
     # Firebase Admin SDK
     sa_path = os.environ.get("FIREBASE_SERVICE_ACCOUNT_KEY_PATH", "./firebase-service-account.json")
@@ -127,7 +132,7 @@ async def lifespan(app: FastAPI):
     else:
         print("WARNING: users.json not found. All authenticated requests will be rejected.")
 
-    init_db()
+    init_db(os.environ.get("REDIS_URL", "redis://localhost:6379"))
 
     # OpenAI — async client for pipeline nodes, sync client for RAG retrieve()
     async_client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
@@ -152,6 +157,7 @@ async def lifespan(app: FastAPI):
         cleaned_posts = {p["pid"]: p for p in json.load(f)}
 
     safety_classifier = hf_pipeline("text-classification", model="KoalaAI/Text-Moderation")
+    injection_classifier = hf_pipeline("text-classification", model="fmops/distilbert-prompt-injection")
 
     compiled = build_graph(
         async_client, sync_client, tavily_client,
@@ -217,14 +223,23 @@ async def generate_title(req: GenerateTitleRequest, user: dict = Depends(get_cur
 @app.post("/api/sessions/new", response_model=NewSessionResponse)
 async def new_session(user: dict = Depends(get_current_user), req: NewSessionRequest = None):
     draft = req.draft_content if req else ""
-    session_id = create_session(user["local_uid"], draft_content=draft)
+    session_id = await create_session(user["local_uid"], draft_content=draft)
     return NewSessionResponse(session_id=session_id, local_uid=user["local_uid"])
 
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
+    # ── Gateway: prompt injection check ───────────────────────────────────────
+    if injection_classifier is not None:
+        text_to_check = req.display_input or req.user_input
+        result = await asyncio.to_thread(injection_classifier, text_to_check)
+        if result[0]["label"] == "LABEL_1" and result[0]["score"] > 0.85:
+            async def blocked_stream():
+                yield _sse({"type": "error", "payload": {"message": "⚠️ Your message was flagged as a prompt injection attempt and was not processed."}})
+            return StreamingResponse(blocked_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
     try:
-        state = get_session(req.session_id, user["local_uid"])
+        state = await get_session(req.session_id, user["local_uid"])
     except KeyError as e:
         raise HTTPException(404, str(e))
 
@@ -248,14 +263,22 @@ async def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
             post_sent = False
             clarification_sent = False
 
+            # Clear any stale cancel flag left over from a previous request on this session
+            await clear_cancel(req.session_id)
+
             pipeline_input = {k: state[k] for k in _POSTSTATE_KEYS if k in state}
+            cancelled = False
             async for ev in compiled.astream_events(pipeline_input, version="v2"):
+                if await check_cancel(req.session_id):
+                    await clear_cancel(req.session_id)
+                    cancelled = True
+                    break
+
                 kind = ev["event"]
                 name = ev.get("name", "")
                 lg_node = ev.get("metadata", {}).get("langgraph_node", "")
                 # Accept the registered node name from either field
                 node_key = lg_node if lg_node in NODE_STATUS else (name if name in NODE_STATUS else "")
-
 
                 if kind == "on_chain_start" and lg_node:
                     node_start_times[lg_node] = time.monotonic()
@@ -300,6 +323,10 @@ async def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
                         clarification_sent = True
                         yield _sse({"type": "clarification", "payload": {"question": output["clarification_question"]}})
 
+            if cancelled:
+                yield _sse({"type": "cancelled"})
+                return  # skip save_session — DB stays at last clean state
+
             total_ms = round((time.monotonic() - pipeline_start) * 1000)
             state["_timings"] = {"total_ms": total_ms, **node_timings}
 
@@ -311,7 +338,7 @@ async def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
                 state["history"].append({"role": "user", "content": history_user_content})
                 state["history"].append({"role": "assistant", "content": state["final_post"]})
 
-            save_session(req.session_id, user["local_uid"], state)
+            await save_session(req.session_id, user["local_uid"], state)
             yield _sse({"type": "done"})
 
         except Exception as e:
@@ -324,22 +351,86 @@ async def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
     )
 
 
+@app.post("/api/sessions/{session_id}/cancel", status_code=204)
+async def cancel_session(session_id: str, user: dict = Depends(get_current_user)):
+    try:
+        await get_session(session_id, user["local_uid"])
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    await set_cancel(session_id)
+
+
 @app.get("/api/sessions", response_model=SessionListResponse)
 async def sessions_list(user: dict = Depends(get_current_user)):
-    return SessionListResponse(sessions=list_sessions(user["local_uid"]))
+    in_progress = [{**s, "completed": False} for s in await list_sessions(user["local_uid"])]
+
+    completed = []
+    if completed_sessions_col is not None:
+        for doc in completed_sessions_col.find({"local_uid": user["local_uid"]}, sort=[("completed_at", -1)]):
+            history = doc.get("history", [])
+            user_turns = [t for t in history if t["role"] == "user"]
+            if not user_turns:
+                continue
+            completed.append({
+                "session_id": doc["session_id"],
+                "updated_at": doc.get("completed_at", ""),
+                "turn_count": len(user_turns),
+                "style": doc.get("style", ""),
+                "preview": user_turns[0]["content"][:80],
+                "completed": True,
+            })
+
+    all_sessions = sorted(in_progress + completed, key=lambda s: s["updated_at"], reverse=True)
+    return SessionListResponse(sessions=all_sessions)
 
 
 @app.delete("/api/sessions/{session_id}", status_code=204)
 async def session_delete(session_id: str, user: dict = Depends(get_current_user)):
-    delete_session(session_id, user["local_uid"])
+    await delete_session(session_id, user["local_uid"])
+
+
+@app.delete("/api/sessions/{session_id}/completed", status_code=204)
+async def session_delete_completed(session_id: str, user: dict = Depends(get_current_user)):
+    if completed_sessions_col is None:
+        raise HTTPException(503, "MongoDB not available")
+    result = completed_sessions_col.delete_one({"session_id": session_id, "local_uid": user["local_uid"]})
+    if result.deleted_count == 0:
+        raise HTTPException(404, f"Completed session {session_id!r} not found")
 
 
 @app.get("/api/sessions/{session_id}", response_model=SessionDetailResponse)
 async def session_detail(session_id: str, user: dict = Depends(get_current_user)):
     try:
-        detail = get_session_detail(session_id, user["local_uid"])
-    except KeyError as e:
-        raise HTTPException(404, str(e))
+        detail = await get_session_detail(session_id, user["local_uid"])
+    except KeyError:
+        # Fall back to MongoDB for completed (applied) sessions
+        try:
+            doc = completed_sessions_col.find_one({"session_id": session_id, "local_uid": user["local_uid"]}) if completed_sessions_col is not None else None
+        except Exception as e:
+            raise HTTPException(500, f"MongoDB lookup failed: {e}")
+        if not doc:
+            raise HTTPException(404, f"Session {session_id!r} not found")
+        try:
+            detail = {
+                "session_id": session_id,
+                "updated_at": doc.get("completed_at", ""),
+                "history": doc.get("history", []),
+                "debug": {
+                    "style": doc.get("style", ""),
+                    "next_node": "",
+                    "needs_clarification": False,
+                    "draft_content": "",
+                    "final_post": doc.get("final_content", ""),
+                    "web_search_used": False,
+                    "rag_metrics": {},
+                    "timings": {},
+                },
+            }
+            return SessionDetailResponse(**detail)
+        except Exception as e:
+            raise HTTPException(500, f"Failed to build response: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"Redis lookup failed: {e}")
     return SessionDetailResponse(**detail)
 
 
@@ -348,10 +439,10 @@ async def session_complete(session_id: str, req: CompleteSessionRequest, user: d
     if completed_sessions_col is None:
         raise HTTPException(503, "MongoDB not available")
     try:
-        state = get_session(session_id, user["local_uid"])
+        state = await get_session(session_id, user["local_uid"])
     except KeyError as e:
         raise HTTPException(404, str(e))
-    complete_session(session_id, user["local_uid"], req.final_content, state, completed_sessions_col)
+    await complete_session(session_id, user["local_uid"], req.final_content, state, completed_sessions_col)
 
 
 def _sse(data: dict) -> str:

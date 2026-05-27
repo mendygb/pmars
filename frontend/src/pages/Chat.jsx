@@ -16,6 +16,7 @@ export default function Chat({ user, location, initialContent, seedDraft, debugM
   const autoSentRef = useRef(false)
   const initialSessionRef = useRef(false)
   const inputRef = useRef(null)
+  const abortControllerRef = useRef(null)
 
   const getToken = () => user.getIdToken()
 
@@ -93,6 +94,23 @@ export default function Chat({ user, location, initialContent, seedDraft, debugM
     onApply(finalContent)
   }
 
+  const handleCancel = async () => {
+    abortControllerRef.current?.abort()
+    setIsLoading(false)
+    setStatusMessage('')
+    setStreamingText('')
+    streamingTextRef.current = ''
+    if (sessionIdRef.current) {
+      try {
+        const token = await getToken()
+        await fetch(`/api/sessions/${sessionIdRef.current}/cancel`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      } catch (_) {}
+    }
+  }
+
   const sendMessage = async (userMessage, currentSessionId, isFirstMessage) => {
     if (!userMessage || !currentSessionId) return
 
@@ -109,10 +127,12 @@ export default function Chat({ user, location, initialContent, seedDraft, debugM
 
     try {
       const token = await getToken()
+      abortControllerRef.current = new AbortController()
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ user_input: messageToSend, display_input: userMessage, session_id: currentSessionId, debug: debugMode }),
+        signal: abortControllerRef.current.signal,
       })
 
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
@@ -161,6 +181,11 @@ export default function Chat({ user, location, initialContent, seedDraft, debugM
           } else if (event.type === 'done') {
             setStatusMessage('')
             setIsLoading(false)
+          } else if (event.type === 'cancelled') {
+            streamingTextRef.current = ''
+            setStreamingText('')
+            setStatusMessage('')
+            setIsLoading(false)
           } else if (event.type === 'error') {
             setMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${event.payload.message}` }])
             streamingTextRef.current = ''
@@ -171,6 +196,7 @@ export default function Chat({ user, location, initialContent, seedDraft, debugM
         }
       }
     } catch (err) {
+      if (err.name === 'AbortError') return
       setMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${err.message}` }])
       setStatusMessage('')
       setIsLoading(false)
@@ -259,13 +285,23 @@ export default function Chat({ user, location, initialContent, seedDraft, debugM
           rows={1}
           style={{ flex: 1, padding: '10px 14px', borderRadius: '20px', border: '1px solid #ddd', fontSize: '14px', outline: 'none', resize: 'none', lineHeight: '1.5', overflow: 'hidden', fontFamily: 'inherit' }}
         />
-        <button
-          type="submit"
-          disabled={isLoading || !input.trim()}
-          style={{ padding: '10px 18px', borderRadius: '20px', border: 'none', background: '#007AFF', color: 'white', fontSize: '14px', fontWeight: '500', cursor: 'pointer', opacity: isLoading || !input.trim() ? 0.5 : 1, flexShrink: 0 }}
-        >
-          Send
-        </button>
+        {isLoading ? (
+          <button
+            type="button"
+            onClick={handleCancel}
+            style={{ padding: '10px 18px', borderRadius: '20px', border: 'none', background: '#FF3B30', color: 'white', fontSize: '14px', fontWeight: '500', cursor: 'pointer', flexShrink: 0 }}
+          >
+            Stop
+          </button>
+        ) : (
+          <button
+            type="submit"
+            disabled={!input.trim()}
+            style={{ padding: '10px 18px', borderRadius: '20px', border: 'none', background: '#007AFF', color: 'white', fontSize: '14px', fontWeight: '500', cursor: 'pointer', opacity: !input.trim() ? 0.5 : 1, flexShrink: 0 }}
+          >
+            Send
+          </button>
+        )}
       </form>
     </div>
   )

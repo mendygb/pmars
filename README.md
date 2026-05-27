@@ -21,19 +21,25 @@ Two main components:
    PINECONE_API_KEY=your_key
    TAVILY_API_KEY=your_key
    GOOGLE_MAPS_API_KEY=your_key
+   REDIS_URL=redis://localhost:6379
    ```
 
-2. Install Python dependencies:
+2. Start Redis (requires Docker):
+   ```bash
+   docker compose up -d
+   ```
+
+3. Install Python dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-3. Install the Google Maps MCP server (requires Node.js):
+4. Install the Google Maps MCP server (requires Node.js):
    ```bash
    npm install -g @modelcontextprotocol/server-google-maps
    ```
 
-4. The RAG pipeline expects posts to be stored in a database — this project uses a local MongoDB instance, but you can swap in any database that fits your setup.
+5. The RAG pipeline expects posts to be stored in a database — this project uses a local MongoDB instance, but you can swap in any database that fits your setup.
 
 ---
 
@@ -85,9 +91,10 @@ Open [http://localhost:5173](http://localhost:5173) → sign in → fill in loca
 
 ### Architecture
 
-- **`main.py`** — FastAPI app: Firebase Auth middleware, SSE streaming chat endpoint, session CRUD, title generation endpoint
-- **`db.py`** — SQLite session storage (`sessions.db`, gitignored): stores full pipeline state per session per user; completed sessions are archived to MongoDB on Apply
-- **`frontend/`** — React (Vite): Firebase Auth, EditingPage (location/title/content form with AI title generation), Chat sub-view (auto-send, Apply button per draft), dev history page with debug panel
+- **`main.py`** — FastAPI app: Firebase Auth middleware, SSE streaming chat endpoint, session CRUD, cancel endpoint, prompt injection gateway, title generation endpoint
+- **`db.py`** — Redis session storage (async, 30-day TTL per session): stores full pipeline state per session per user; cancel flags use a 5-minute TTL key; completed sessions are archived to MongoDB on Apply
+- **`docker-compose.yml`** — Starts a local Redis 7 instance with RDB persistence on a named volume
+- **`frontend/`** — React (Vite): Firebase Auth, EditingPage (location/title/content form with AI title generation), Chat sub-view (auto-send, Apply button per draft, Stop button to cancel mid-stream), dev history page with debug panel (shows both in-progress and applied sessions)
 
 ---
 

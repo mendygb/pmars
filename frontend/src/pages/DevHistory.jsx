@@ -14,6 +14,7 @@ export default function DevHistory({ user, onBack }) {
   const [expanded, setExpanded] = useState(null)
   const [detail, setDetail] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState(null)
   const [activeTab, setActiveTab] = useState('conversation')
 
   const getToken = () => user.getIdToken()
@@ -34,31 +35,40 @@ export default function DevHistory({ user, onBack }) {
     load()
   }, [])
 
-  const deleteSession = async (e, sessionId) => {
+  const deleteSession = async (e, sessionId, isCompleted) => {
     e.stopPropagation()
     if (!confirm('Delete this session?')) return
     const token = await getToken()
-    await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+    const url = isCompleted ? `/api/sessions/${sessionId}/completed` : `/api/sessions/${sessionId}`
+    await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
     setSessions((prev) => prev.filter((s) => s.session_id !== sessionId))
-    if (expanded === sessionId) { setExpanded(null); setDetail(null) }
+    if (expanded === sessionId) { setExpanded(null); setDetail(null); setDetailError(null) }
   }
 
   const toggleSession = async (sessionId) => {
     if (expanded === sessionId) {
       setExpanded(null)
       setDetail(null)
+      setDetailError(null)
       return
     }
     setExpanded(sessionId)
     setDetail(null)
+    setDetailError(null)
     setDetailLoading(true)
     setActiveTab('conversation')
     try {
       const token = await getToken()
       const res = await fetch(`/api/sessions/${sessionId}`, { headers: { Authorization: `Bearer ${token}` } })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }))
+        setDetailError(`Error ${res.status}: ${err.detail ?? res.statusText}`)
+        return
+      }
       setDetail(await res.json())
     } catch (e) {
       console.error(e)
+      setDetailError(e.message)
     } finally {
       setDetailLoading(false)
     }
@@ -94,13 +104,18 @@ export default function DevHistory({ user, onBack }) {
                 <div style={{ fontSize: '14px', color: '#1a1a1a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {s.preview}
                 </div>
-                <div style={{ fontSize: '12px', color: '#999', marginTop: '2px' }}>
+                <div style={{ fontSize: '12px', color: '#999', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '6px' }}>
                   {s.turn_count} turn{s.turn_count !== 1 ? 's' : ''} · {formatTime(s.updated_at)}
+                  {s.completed && (
+                    <span style={{ padding: '1px 6px', borderRadius: '10px', background: '#e8f5e9', color: '#2e7d32', fontSize: '11px', fontWeight: '600' }}>
+                      Applied ✓
+                    </span>
+                  )}
                 </div>
               </div>
               <span style={{ color: '#ccc', fontSize: '12px' }}>{expanded === s.session_id ? '▲' : '▼'}</span>
               <button
-                onClick={(e) => deleteSession(e, s.session_id)}
+                onClick={(e) => deleteSession(e, s.session_id, s.completed)}
                 style={{ padding: '3px 8px', borderRadius: '5px', border: '1px solid #ffcccc', background: '#fff5f5', color: '#e53e3e', fontSize: '12px', flexShrink: 0 }}
               >
                 Delete
@@ -111,6 +126,7 @@ export default function DevHistory({ user, onBack }) {
             {expanded === s.session_id && (
               <div style={{ borderTop: '1px solid #eee' }}>
                 {detailLoading && <p style={{ color: '#999', padding: '16px', fontSize: '13px' }}>Loading detail...</p>}
+                {detailError && <p style={{ color: '#e53e3e', padding: '16px', fontSize: '13px' }}>{detailError}</p>}
                 {detail && (
                   <>
                     {/* Tabs */}

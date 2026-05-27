@@ -1,9 +1,13 @@
 import json
-import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
-DB_PATH = "sessions.db"
+import redis.asyncio as aioredis
+
+_redis: aioredis.Redis = None
+
+SESSION_TTL = 60 * 60 * 24 * 30  # 30 days
+CANCEL_TTL = 300                  # 5 minutes
 
 FRESH_STATE = {
     "user_input": "",
@@ -22,122 +26,118 @@ FRESH_STATE = {
 }
 
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            session_id TEXT PRIMARY KEY,
-            local_uid  TEXT NOT NULL,
-            state_json TEXT NOT NULL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
+def init_db(redis_url: str = "redis://localhost:6379"):
+    global _redis
+    _redis = aioredis.from_url(redis_url, decode_responses=True)
 
 
-def create_session(local_uid: str, draft_content: str = "") -> str:
+# ── Session CRUD ──────────────────────────────────────────────────────────────
+
+async def create_session(local_uid: str, draft_content: str = "") -> str:
     session_id = str(uuid.uuid4())
-    # local_uid == media_id on the media platform — concat at session creation so all
-    # downstream nodes (Research, Director, Copywriter) can read it from state
     fresh = {**FRESH_STATE, "media_id": local_uid, "draft_content": draft_content}
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT INTO sessions (session_id, local_uid, state_json) VALUES (?, ?, ?)",
-        (session_id, local_uid, json.dumps(fresh)),
-    )
-    conn.commit()
-    conn.close()
+    now = datetime.now(timezone.utc).isoformat()
+    pipe = _redis.pipeline()
+    pipe.hset(f"session:{session_id}", mapping={
+        "local_uid": local_uid,
+        "state_json": json.dumps(fresh),
+        "updated_at": now,
+    })
+    pipe.expire(f"session:{session_id}", SESSION_TTL)
+    pipe.zadd(f"sessions:uid:{local_uid}", {session_id: _unix_now()})
+    await pipe.execute()
     return session_id
 
 
-def get_session(session_id: str, local_uid: str) -> dict:
-    conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        "SELECT state_json FROM sessions WHERE session_id = ? AND local_uid = ?",
-        (session_id, local_uid),
-    ).fetchone()
-    conn.close()
-    if not row:
+async def get_session(session_id: str, local_uid: str) -> dict:
+    data = await _redis.hgetall(f"session:{session_id}")
+    if not data or data.get("local_uid") != local_uid:
         raise KeyError(f"Session {session_id!r} not found for user {local_uid!r}")
-    return json.loads(row[0])
+    return json.loads(data["state_json"])
 
 
-def save_session(session_id: str, local_uid: str, state: dict):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        """INSERT INTO sessions (session_id, local_uid, state_json, updated_at)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(session_id) DO UPDATE SET
-               state_json = excluded.state_json,
-               updated_at = excluded.updated_at""",
-        (session_id, local_uid, json.dumps(state), datetime.utcnow().isoformat()),
-    )
-    conn.commit()
-    conn.close()
+async def save_session(session_id: str, local_uid: str, state: dict):
+    now = datetime.now(timezone.utc).isoformat()
+    pipe = _redis.pipeline()
+    pipe.hset(f"session:{session_id}", mapping={
+        "local_uid": local_uid,
+        "state_json": json.dumps(state),
+        "updated_at": now,
+    })
+    pipe.expire(f"session:{session_id}", SESSION_TTL)
+    pipe.zadd(f"sessions:uid:{local_uid}", {session_id: _unix_now()})
+    await pipe.execute()
 
 
-def list_sessions(local_uid: str) -> list[dict]:
-    conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute(
-        "SELECT session_id, state_json, updated_at FROM sessions WHERE local_uid = ? ORDER BY updated_at DESC",
-        (local_uid,),
-    ).fetchall()
-    conn.close()
+async def list_sessions(local_uid: str) -> list[dict]:
+    session_ids = await _redis.zrevrange(f"sessions:uid:{local_uid}", 0, -1)
+    if not session_ids:
+        return []
+
+    # Fetch all sessions in one pipeline
+    pipe = _redis.pipeline()
+    for sid in session_ids:
+        pipe.hgetall(f"session:{sid}")
+    all_data = await pipe.execute()
+
     result = []
-    for session_id, state_json, updated_at in rows:
-        state = json.loads(state_json)
+    stale_ids = []
+    for sid, data in zip(session_ids, all_data):
+        if not data:
+            stale_ids.append(sid)
+            continue
+        state = json.loads(data["state_json"])
         history = state.get("history", [])
         user_turns = [t for t in history if t["role"] == "user"]
         if not user_turns:
-            continue  # skip sessions where no messages were sent
+            continue
         result.append({
-            "session_id": session_id,
-            "updated_at": updated_at,
+            "session_id": sid,
+            "updated_at": data.get("updated_at", ""),
             "turn_count": len(user_turns),
             "style": state.get("style", ""),
             "preview": user_turns[0]["content"][:80],
         })
+
+    # Clean up sorted set entries whose session keys have expired
+    if stale_ids:
+        await _redis.zrem(f"sessions:uid:{local_uid}", *stale_ids)
+
     return result
 
 
-def complete_session(session_id: str, local_uid: str, final_content: str, state: dict, col) -> None:
-    """Archive session to MongoDB completed_sessions and remove it from SQLite."""
+async def delete_session(session_id: str, local_uid: str):
+    data = await _redis.hgetall(f"session:{session_id}")
+    if not data or data.get("local_uid") != local_uid:
+        raise KeyError(f"Session {session_id!r} not found for user {local_uid!r}")
+    pipe = _redis.pipeline()
+    pipe.delete(f"session:{session_id}")
+    pipe.zrem(f"sessions:uid:{local_uid}", session_id)
+    await pipe.execute()
+
+
+async def complete_session(session_id: str, local_uid: str, final_content: str, state: dict, col) -> None:
+    """Archive session to MongoDB completed_sessions and remove it from Redis."""
     col.insert_one({
         "session_id": session_id,
         "local_uid": local_uid,
         "history": state.get("history", []),
         "style": state.get("style", ""),
         "final_content": final_content,
-        "completed_at": datetime.utcnow().isoformat(),
+        "completed_at": datetime.now(timezone.utc).isoformat(),
     })
-    delete_session(session_id, local_uid)
+    await delete_session(session_id, local_uid)
 
 
-def delete_session(session_id: str, local_uid: str):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "DELETE FROM sessions WHERE session_id = ? AND local_uid = ?",
-        (session_id, local_uid),
-    )
-    conn.commit()
-    conn.close()
-
-
-def get_session_detail(session_id: str, local_uid: str) -> dict:
-    conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        "SELECT state_json, updated_at FROM sessions WHERE session_id = ? AND local_uid = ?",
-        (session_id, local_uid),
-    ).fetchone()
-    conn.close()
-    if not row:
+async def get_session_detail(session_id: str, local_uid: str) -> dict:
+    data = await _redis.hgetall(f"session:{session_id}")
+    if not data or data.get("local_uid") != local_uid:
         raise KeyError(f"Session {session_id!r} not found for user {local_uid!r}")
-    state = json.loads(row[0])
+    state = json.loads(data["state_json"])
     loc = state.get("location_info", {})
     return {
         "session_id": session_id,
-        "updated_at": row[1],
+        "updated_at": data.get("updated_at", ""),
         "history": state.get("history", []),
         "debug": {
             "style": state.get("style", ""),
@@ -150,3 +150,23 @@ def get_session_detail(session_id: str, local_uid: str) -> dict:
             "timings": state.get("_timings", {}),
         },
     }
+
+
+# ── Cancel flags ──────────────────────────────────────────────────────────────
+
+async def set_cancel(session_id: str) -> None:
+    await _redis.set(f"cancel:{session_id}", "1", ex=CANCEL_TTL)
+
+
+async def check_cancel(session_id: str) -> bool:
+    return bool(await _redis.exists(f"cancel:{session_id}"))
+
+
+async def clear_cancel(session_id: str) -> None:
+    await _redis.delete(f"cancel:{session_id}")
+
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _unix_now() -> float:
+    return datetime.now(timezone.utc).timestamp()

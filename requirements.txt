@@ -14,3 +14,4 @@ fastapi
 uvicorn[standard]
 firebase-admin
 httpx
+redis[hiredis]
