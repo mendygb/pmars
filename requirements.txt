@@ -11,6 +11,7 @@ tavily-python
 mcp
 mcp-server-fetch
 fastapi
+pydantic-settings
 uvicorn[standard]
 firebase-admin
 httpx

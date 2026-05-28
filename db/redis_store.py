@@ -74,7 +74,6 @@ async def list_sessions(local_uid: str) -> list[dict]:
     if not session_ids:
         return []
 
-    # Fetch all sessions in one pipeline
     pipe = _redis.pipeline()
     for sid in session_ids:
         pipe.hgetall(f"session:{sid}")
@@ -99,7 +98,6 @@ async def list_sessions(local_uid: str) -> list[dict]:
             "preview": user_turns[0]["content"][:80],
         })
 
-    # Clean up sorted set entries whose session keys have expired
     if stale_ids:
         await _redis.zrem(f"sessions:uid:{local_uid}", *stale_ids)
 
@@ -114,19 +112,6 @@ async def delete_session(session_id: str, local_uid: str):
     pipe.delete(f"session:{session_id}")
     pipe.zrem(f"sessions:uid:{local_uid}", session_id)
     await pipe.execute()
-
-
-async def complete_session(session_id: str, local_uid: str, final_content: str, state: dict, col) -> None:
-    """Archive session to MongoDB completed_sessions and remove it from Redis."""
-    col.insert_one({
-        "session_id": session_id,
-        "local_uid": local_uid,
-        "history": state.get("history", []),
-        "style": state.get("style", ""),
-        "final_content": final_content,
-        "completed_at": datetime.now(timezone.utc).isoformat(),
-    })
-    await delete_session(session_id, local_uid)
 
 
 async def get_session_detail(session_id: str, local_uid: str) -> dict:

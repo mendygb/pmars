@@ -23,12 +23,8 @@ agents/outputs/
 # test scripts
 rag/test/
 
-# other modules (not part of this PR)
-travel_consultant/
-hugging_face_playground/
-index.html
-test.py
-temp.txt
+# misc exploratory scripts (not part of the main app)
+misc/
 
 # tooling
 .vscode/
