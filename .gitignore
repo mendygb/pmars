@@ -20,6 +20,9 @@ agents/outputs/
 # test scripts
 rag/test/
 
+# local dev scripts (seed data, plotting, etc.)
+scripts/
+
 # misc exploratory scripts (not part of the main app)
 misc/
 

@@ -97,7 +97,7 @@ Open [http://localhost:5173](http://localhost:5173) → sign in → fill in loca
 - **`schemas/`** — Pydantic request/response models
 - **`services/`** — Business logic: `chat_service.py` (GPT-based injection check + pipeline orchestration), `title_service.py`
 - **`db/redis_store.py`** — Redis session storage (async, 30-day TTL): full pipeline state per session; cancel flags use a 5-minute TTL key
-- **`db/mongo_store.py`** — MongoDB: `posts` collection (RAG tag search), `completed_sessions` (archived on Apply)
+- **`db/mongo_store.py`** — MongoDB: `posts` collection (RAG tag search), `completed_sessions` (archived on Apply), `audit_logs` (per-request token usage, latency, and context — written after every pipeline run for billing and monitoring)
 - **`docker-compose.yml`** — Starts a local Redis 7 instance with RDB persistence on a named volume
 - **`frontend/`** — React (Vite): Firebase Auth, EditingPage (location/title/content form with AI title generation), Chat sub-view (auto-send, Apply button per draft, Stop button to cancel mid-stream), dev history page with debug panel (shows both in-progress and applied sessions)
 

@@ -1,16 +1,20 @@
-from pymongo import MongoClient
+from pymongo import MongoClient, ASCENDING, DESCENDING
 
 _client: MongoClient = None
 _completed_col = None
 _posts_col = None
+_audit_col = None
 
 
 def init_mongo(mongo_uri: str = "mongodb://localhost:27017/") -> None:
-    global _client, _completed_col, _posts_col
+    global _client, _completed_col, _posts_col, _audit_col
     _client = MongoClient(mongo_uri, serverSelectionTimeoutMS=2000)
     db = _client["social_media_db"]
     _completed_col = db["completed_sessions"]
     _posts_col = db["posts"]
+    _audit_col = db["audit_logs"]
+    _audit_col.create_index([("user_id", ASCENDING), ("timestamp", DESCENDING)])
+    _audit_col.create_index([("timestamp", DESCENDING)])
 
 
 def close_mongo() -> None:
@@ -62,3 +66,9 @@ def insert_completed(doc: dict) -> None:
     if _completed_col is None:
         raise RuntimeError("MongoDB not initialized")
     _completed_col.insert_one(doc)
+
+
+def insert_audit_log(doc: dict) -> None:
+    if _audit_col is None:
+        return
+    _audit_col.insert_one(doc)

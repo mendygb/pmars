@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 from fastapi import HTTPException
@@ -10,6 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.state import PostState
 from core.config import settings
+from db.mongo_store import insert_audit_log
 from db.redis_store import check_cancel, clear_cancel, get_session, save_session
 from schemas.chat import ChatRequest
 
@@ -39,15 +41,16 @@ _injection_llm = ChatOpenAI(
 )
 
 
-async def _is_injection(text: str) -> bool:
+async def _is_injection(text: str) -> tuple[bool, dict]:
     try:
         response = await _injection_llm.ainvoke([
             SystemMessage(content=_INJECTION_PROMPT),
             HumanMessage(content=text),
         ])
-        return json.loads(response.content).get("is_injection", False)
+        usage = dict(response.usage_metadata) if response.usage_metadata else {}
+        return json.loads(response.content).get("is_injection", False), usage
     except Exception:
-        return False  # fail open — don't block legitimate users on classifier error
+        return False, {}  # fail open — don't block legitimate users on classifier error
 
 _POSTSTATE_KEYS = set(PostState.__annotations__.keys())
 
@@ -66,7 +69,11 @@ async def run_chat_stream(
     user: dict,
     graph,
 ) -> StreamingResponse:
-    if await _is_injection(req.display_input or req.user_input):
+    injection_t0 = time.monotonic()
+    is_inj, injection_usage = await _is_injection(req.display_input or req.user_input)
+    injection_ms = round((time.monotonic() - injection_t0) * 1000)
+
+    if is_inj:
         async def blocked_stream():
             yield _sse({"type": "error", "payload": {"message": "⚠️ We weren't able to process your message. Please try rephrasing it."}})
         return StreamingResponse(blocked_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -90,6 +97,7 @@ async def run_chat_stream(
 
             node_start_times: dict[str, float] = {}
             node_timings: dict[str, float] = {}
+            node_usage: dict[str, dict] = {}
             pipeline_start = time.monotonic()
             status_sent: set[str] = set()
             post_sent = False
@@ -121,9 +129,18 @@ async def run_chat_stream(
                     if token:
                         yield _sse({"type": "token", "content": token})
 
-                elif kind == "on_chat_model_end" and lg_node == "critic" and not post_sent:
-                    post_sent = True
-                    yield _sse({"type": "message_end"})
+                elif kind == "on_chat_model_end" and lg_node:
+                    output_msg = ev["data"].get("output")
+                    if output_msg and hasattr(output_msg, "usage_metadata") and output_msg.usage_metadata:
+                        um = output_msg.usage_metadata
+                        node_usage[lg_node] = {
+                            "model": (output_msg.response_metadata or {}).get("model_name", ""),
+                            "input_tokens": um.get("input_tokens", 0),
+                            "output_tokens": um.get("output_tokens", 0),
+                        }
+                    if lg_node == "critic" and not post_sent:
+                        post_sent = True
+                        yield _sse({"type": "message_end"})
 
                 elif kind == "on_chain_end" and lg_node:
                     output = ev["data"].get("output", {})
@@ -147,12 +164,44 @@ async def run_chat_stream(
                         clarification_sent = True
                         yield _sse({"type": "clarification", "payload": {"question": output["clarification_question"]}})
 
+            total_ms = round((time.monotonic() - pipeline_start) * 1000)
+            state["_timings"] = {"total_ms": total_ms, **node_timings}
+
+            nodes_detail = {
+                node: {**node_usage.get(node, {}), "latency_ms": node_timings.get(node, 0)}
+                for node in set(node_usage) | set(node_timings)
+            }
+            total_in = sum(n.get("input_tokens", 0) for n in nodes_detail.values())
+            total_out = sum(n.get("output_tokens", 0) for n in nodes_detail.values())
+            audit_doc = {
+                "user_id": user["local_uid"],
+                "session_id": req.session_id,
+                "timestamp": datetime.now(timezone.utc),
+                "nodes": nodes_detail,
+                "injection_check": {
+                    "model": settings.director_model,
+                    "input_tokens": injection_usage.get("input_tokens", 0),
+                    "output_tokens": injection_usage.get("output_tokens", 0),
+                    "latency_ms": injection_ms,
+                },
+                "totals": {
+                    "input_tokens": total_in,
+                    "output_tokens": total_out,
+                    "total_tokens": total_in + total_out,
+                    "latency_ms": total_ms,
+                },
+                "context": {
+                    "style": state.get("style", ""),
+                    "nodes_visited": list(node_usage.keys()),
+                    "is_refinement": is_refinement,
+                    "cancelled": cancelled,
+                },
+            }
+            await asyncio.to_thread(insert_audit_log, audit_doc)
+
             if cancelled:
                 yield _sse({"type": "cancelled"})
                 return
-
-            total_ms = round((time.monotonic() - pipeline_start) * 1000)
-            state["_timings"] = {"total_ms": total_ms, **node_timings}
 
             history_user_content = req.display_input or req.user_input
             if state.get("needs_clarification"):
