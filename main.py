@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from openai import AsyncOpenAI, OpenAI
+from openai import OpenAI
 from pinecone import Pinecone
 from tavily import TavilyClient
 from transformers import pipeline as hf_pipeline
@@ -30,7 +30,6 @@ async def lifespan(app: FastAPI):
     init_db(settings.redis_url)
     mongo_store.init_mongo()
 
-    async_client = AsyncOpenAI(api_key=settings.openai_api_key)
     sync_client = OpenAI(api_key=settings.openai_api_key)
     tavily_client = TavilyClient(api_key=settings.tavily_api_key)
 
@@ -47,10 +46,9 @@ async def lifespan(app: FastAPI):
         cleaned_posts = {p["pid"]: p for p in json.load(f)}
 
     safety_classifier = hf_pipeline("text-classification", model="KoalaAI/Text-Moderation")
-    app.state.injection_classifier = hf_pipeline("text-classification", model="fmops/distilbert-prompt-injection")
 
     app.state.graph = build_graph(
-        async_client, sync_client, tavily_client,
+        sync_client, tavily_client,
         index, mongo_store.get_posts_col(),
         chunks_by_pid, cleaned_posts,
         maps_api_key=settings.google_maps_api_key,

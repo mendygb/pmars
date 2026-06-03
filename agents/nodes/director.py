@@ -1,13 +1,12 @@
 import json
 import logging
 import time
-from openai import AsyncOpenAI
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from agents.state import PostState
+from core.config import settings
 
 logger = logging.getLogger(__name__)
-
-# UPGRADE: swap gpt-4o-mini → gpt-4o for more accurate routing and style classification
-MODEL = "gpt-4o-mini"
 
 SYSTEM_PROMPT = """You are the Director of a social media post-writing pipeline. You coordinate specialized agents to help users write engaging social media posts about places they've visited.
 
@@ -49,17 +48,27 @@ Respond ONLY with a valid JSON object:
 }"""
 
 
-def make_director_node(client: AsyncOpenAI, debug=False):
+def make_director_node(debug=False):
+    llm = ChatOpenAI(
+        model=settings.director_model,
+        temperature=0.2,  # low — routing should be stable and deterministic
+        model_kwargs={"response_format": {"type": "json_object"}},
+        api_key=settings.openai_api_key,
+    )
+
     async def director_node(state: PostState) -> dict:
         logger.info("💭 Understanding your vibe...")
 
         has_draft = bool(state.get("draft_content"))
 
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        lc_messages = [SystemMessage(content=SYSTEM_PROMPT)]
 
         # Include conversation history so Director understands prior turns
         for turn in state.get("history", []):
-            messages.append(turn)
+            if turn["role"] == "user":
+                lc_messages.append(HumanMessage(content=turn["content"]))
+            elif turn["role"] == "assistant":
+                lc_messages.append(AIMessage(content=turn["content"]))
 
         # On refinement turns, show the Director the current draft alongside the new request
         user_content = state["user_input"]
@@ -68,19 +77,13 @@ def make_director_node(client: AsyncOpenAI, debug=False):
                 f"[Current draft]\n{state['draft_content']}\n\n"
                 f"[User's request]\n{state['user_input']}"
             )
-
-        messages.append({"role": "user", "content": user_content})
+        lc_messages.append(HumanMessage(content=user_content))
 
         t0 = time.time()
-        response = await client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            response_format={"type": "json_object"},
-            temperature=0.2,  # low — routing should be stable and deterministic
-        )
+        response = await llm.ainvoke(lc_messages)
         llm_ms = int((time.time() - t0) * 1000)
 
-        decision = json.loads(response.choices[0].message.content)
+        decision = json.loads(response.content)
 
         if debug:
             logger.debug(

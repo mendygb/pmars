@@ -1,14 +1,11 @@
 import logging
 import time
-from openai import AsyncOpenAI
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from agents.state import PostState
+from core.config import settings
 
 logger = logging.getLogger(__name__)
-
-# UPGRADE: swap gpt-4o-mini → gpt-4o for more nuanced critique and polished rewrites
-MODEL = "gpt-4o-mini"
 
 SYSTEM_PROMPT = """You are a senior social media content editor and SEO specialist. You review draft posts and produce the final polished version.
 
@@ -24,13 +21,13 @@ Rules:
 - Output the final polished post only — no preamble, no "Here is the revised version:" """
 
 
-def make_critic_node(client: AsyncOpenAI, debug=False):
+def make_critic_node(debug=False):
     llm = ChatOpenAI(
-        model=MODEL,
+        model=settings.critic_model,
         temperature=0.4,
         max_tokens=600,
         streaming=True,
-        api_key=client.api_key,
+        api_key=settings.openai_api_key,
     )
 
     async def critic_node(state: PostState) -> dict:

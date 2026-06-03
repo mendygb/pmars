@@ -9,9 +9,12 @@ from mcp import ClientSession, StdioServerParameters
 
 logger = logging.getLogger(__name__)
 from mcp.client.stdio import stdio_client
-from openai import AsyncOpenAI, OpenAI
+from openai import OpenAI
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.state import PostState
+from core.config import settings
 
 # Import retrieve(), build_context(), format_metrics() from 03_rag_query.py.
 # The filename starts with a digit so standard import won't work — use importlib.
@@ -25,9 +28,6 @@ _spec.loader.exec_module(_rag)
 retrieve = _rag.retrieve
 build_context = _rag.build_context
 format_metrics = _rag.format_metrics
-
-# UPGRADE: swap gpt-4o-mini → gpt-4o for more accurate tool selection decisions
-MODEL = "gpt-4o-mini"
 
 SYSTEM_PROMPT = """You are a research agent for a social media post writing pipeline. Your job is to gather relevant reference material for writing an engaging post about a place or experience.
 
@@ -196,31 +196,31 @@ def _format_web_results(results: list) -> str:
 _PERSONAL_POSTS_STUB = [
     {
         "content": (
-            "在 Sightglass Coffee 度过了一个慵懒的周日下午 ☕\n"
-            "阳光穿过工业风的落地窗，洒在粗糙的木质桌面上。\n"
-            "点了一杯 pour over，入口有淡淡的花香和柑橘尾韵。\n"
-            "就这样坐着，发了一会儿呆，什么都不想做，也不需要做。\n"
-            "#SanFrancisco #CoffeeTime #SightglassCoffee #慢生活 #湾区日常"
+            "Lazy Sunday afternoon at Sightglass Coffee ☕\n"
+            "Sunlight filtering through the industrial windows onto rough wooden tables.\n"
+            "Got a pour over — floral on the nose, citrus finish.\n"
+            "Just sat there, zoned out, nothing to do and no need to do anything.\n"
+            "#SanFrancisco #CoffeeTime #SightglassCoffee #SlowLiving #BayAreaDaily"
         ),
         "likes": 312,
     },
     {
         "content": (
-            "第一次去 Tartine Bakery，排了 40 分钟队。\n"
-            "值得吗？Country bread 刚出炉，外皮焦脆，内芯湿润有嚼劲，\n"
-            "抹上半融的黄油，简单到不像话，好吃到说不出话。\n"
-            "下次早点来，据说 5 点就开始排了。\n"
-            "#TartineBakery #SanFrancisco #MissionDistrict #面包控 #湾区美食"
+            "First time at Tartine Bakery — waited 40 minutes in line.\n"
+            "Worth it? The country bread was fresh out of the oven, crust shatteringly crisp, inside chewy and moist.\n"
+            "Smeared with half-melted butter. Stupidly simple, stupidly good.\n"
+            "Come earlier next time — apparently the line starts at 5.\n"
+            "#TartineBakery #SanFrancisco #MissionDistrict #BreadLovers #BayAreaEats"
         ),
         "likes": 487,
     },
     {
         "content": (
-            "Lands End Trail，黄昏时分。\n"
-            "雾从金门大桥那边漫过来，把桥墩一点一点吞掉。\n"
-            "脚下是碎石路，旁边是悬崖，风很大，头发乱成一团。\n"
-            "但那一刻真的觉得，能住在湾区太好了。\n"
-            "#LandsEnd #SanFrancisco #HikingBay #日落 #湾区户外"
+            "Lands End Trail at dusk.\n"
+            "Fog rolling in from the Golden Gate, swallowing the towers one by one.\n"
+            "Gravel underfoot, cliff to the side, wind wrecking my hair.\n"
+            "Moments like this remind me why living in the Bay is worth it.\n"
+            "#LandsEnd #SanFrancisco #HikingBay #Sunset #BayAreaOutdoors"
         ),
         "likes": 623,
     },
@@ -242,7 +242,7 @@ async def _get_personal_style_async(media_id: str) -> str:
     return ("User's own popular posts (personalised style reference):\n\n" + "\n\n".join(blocks))[:700]
 
 
-def make_research_node(client: AsyncOpenAI, sync_client: OpenAI, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key="", debug=False):
+def make_research_node(sync_client: OpenAI, tavily_client, index, posts_col, chunks_by_pid, cleaned_posts, maps_api_key="", debug=False):
     async def research_node(state: PostState) -> dict:
         logger.info("🔍 Finding inspiration...")
 
@@ -253,29 +253,29 @@ def make_research_node(client: AsyncOpenAI, sync_client: OpenAI, tavily_client, 
                 query_parts.append(turn["content"])
         query = " ".join(query_parts)
 
+        llm = ChatOpenAI(
+            model=settings.research_model,
+            temperature=0,
+            api_key=settings.openai_api_key,
+        ).bind_tools(TOOLS, tool_choice="required")  # must call at least one tool
+
         # Step 1: LLM tool selection + personal style fetch run concurrently
         t0 = time.time()
         response, personal_style = await asyncio.gather(
-            client.chat.completions.create(
-                model=MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Gather research for writing a post about: {query}"}
-                ],
-                tools=TOOLS,
-                tool_choice="required",  # must call at least one tool
-                temperature=0,
-            ),
+            llm.ainvoke([
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=f"Gather research for writing a post about: {query}"),
+            ]),
             _get_personal_style_async(state.get("media_id", "")),
         )
         tool_selection_ms = int((time.time() - t0) * 1000)
 
-        tool_calls = response.choices[0].message.tool_calls or []
+        tool_calls = response.tool_calls or []
 
         # Step 2: Execute all tool calls concurrently — each is independent
         async def _execute_tool_call_async(tool_call):
-            fn_name = tool_call.function.name
-            args = json.loads(tool_call.function.arguments)
+            fn_name = tool_call["name"]
+            args = tool_call["args"]
             tool_query = args.get("query", query)
             result = {
                 "fn_name": fn_name,

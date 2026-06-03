@@ -10,11 +10,7 @@ router = APIRouter()
 
 @router.post("/api/chat")
 async def chat(req: ChatRequest, request: Request, user: dict = Depends(get_current_user)):
-    return await run_chat_stream(
-        req, user,
-        request.app.state.graph,
-        request.app.state.injection_classifier,
-    )
+    return await run_chat_stream(req, user, request.app.state.graph)
 
 
 @router.post("/api/sessions/{session_id}/cancel", status_code=204)

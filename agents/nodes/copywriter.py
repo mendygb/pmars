@@ -1,12 +1,11 @@
 import logging
 import time
-from openai import AsyncOpenAI
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 from agents.state import PostState
+from core.config import settings
 
 logger = logging.getLogger(__name__)
-
-# UPGRADE: swap gpt-4o-mini → gpt-4o for richer, more platform-native writing
-MODEL = "gpt-4o-mini"
 
 # Style-specific writing rules injected into the system prompt per post format
 STYLE_GUIDELINES = {
@@ -53,6 +52,7 @@ General rules (always apply):
 - Include 5–8 relevant hashtags at the end (mix of location, activity, niche, and mood tags)
 - Use emojis sparingly — one per key idea at most, never as decoration
 - Output the post only — no preamble like "Here is your post:"
+- Write in the same language as the user's input
 - IMPORTANT: if the user explicitly requests a specific format (e.g. "poem", "haiku", "bullet list", "rhyme"), honor that format above all other style guidelines below
 
 Style-specific rules for this post (override with user's explicit format request if one exists):
@@ -66,6 +66,7 @@ _USER_PROFILE_STUB = {
     "avg_word_count": 130,
     "opener_type": "scene-setting",
     "emoji_density": "low",
+    "hashtag_patterns": "3-5 tags, camelCase, mix of niche and broad",
 }
 
 
@@ -73,11 +74,19 @@ def _format_user_profile(profile: dict) -> str:
     return (
         f"[User voice profile — calibrate to their established style]\n"
         f"Style: {profile['preferred_style']}, ~{profile['avg_word_count']} words, "
-        f"opens with {profile['opener_type']}, emoji density: {profile['emoji_density']}."
+        f"opens with {profile['opener_type']}, emoji density: {profile['emoji_density']}, "
+        f"hashtags: {profile['hashtag_patterns']}."
     )
 
 
-def make_copywriter_node(client: AsyncOpenAI, debug=False):
+def make_copywriter_node(debug=False):
+    llm = ChatOpenAI(
+        model=settings.copywriter_model,
+        temperature=0.9,  # high — creative latitude for writing
+        max_tokens=600,
+        api_key=settings.openai_api_key,
+    )
+
     async def copywriter_node(state: PostState) -> dict:
         logger.info("✍️  Writing your post...")
 
@@ -125,15 +134,10 @@ def make_copywriter_node(client: AsyncOpenAI, debug=False):
                 user_content = f"Conversation context:\n{qa_lines}\n\n{user_content}"
 
         t0 = time.time()
-        response = await client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.9,  # high — creative latitude for writing
-            max_tokens=600,
-        )
+        response = await llm.ainvoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_content),
+        ])
         llm_ms = int((time.time() - t0) * 1000)
 
         if debug:
@@ -143,7 +147,7 @@ def make_copywriter_node(client: AsyncOpenAI, debug=False):
                 "─────────────────────────────────────────────────"
             )
 
-        draft = response.choices[0].message.content.strip()
+        draft = response.content.strip()
         return {"draft_content": draft}
 
     return copywriter_node

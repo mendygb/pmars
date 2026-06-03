@@ -91,11 +91,11 @@ Open [http://localhost:5173](http://localhost:5173) → sign in → fill in loca
 
 ### Architecture
 
-- **`main.py`** — App factory: lifespan startup (builds LangGraph, loads models), CORS, router registration
+- **`main.py`** — App factory: lifespan startup (builds LangGraph, loads Safety Check model), CORS, router registration
 - **`core/`** — Config (pydantic-settings reads `.env`), Firebase auth, logging setup
 - **`api/`** — Route handlers: `chat.py` (SSE stream + cancel), `sessions.py` (session CRUD), `title.py` (title generation), `health.py`
 - **`schemas/`** — Pydantic request/response models
-- **`services/`** — Business logic: `chat_service.py` (injection check + pipeline orchestration), `title_service.py`
+- **`services/`** — Business logic: `chat_service.py` (GPT-based injection check + pipeline orchestration), `title_service.py`
 - **`db/redis_store.py`** — Redis session storage (async, 30-day TTL): full pipeline state per session; cancel flags use a 5-minute TTL key
 - **`db/mongo_store.py`** — MongoDB: `posts` collection (RAG tag search), `completed_sessions` (archived on Apply)
 - **`docker-compose.yml`** — Starts a local Redis 7 instance with RDB persistence on a named volume
@@ -198,4 +198,14 @@ Session transcripts are saved to `agents/outputs/`.
 
 ## Model Notes
 
-All agents use `gpt-4o-mini` by default. Files are commented with `# UPGRADE:` where swapping to `gpt-4o` would improve quality (Director routing, Copywriter writing, Critic evaluation).
+All agents default to `gpt-4o-mini`. Each agent's model is independently configurable via `.env` — set any of the following to swap a specific agent without touching code:
+
+```
+DIRECTOR_MODEL=gpt-4o-mini
+RESEARCH_MODEL=gpt-4o-mini
+COPYWRITER_MODEL=gpt-4o
+CRITIC_MODEL=gpt-4o
+TITLE_MODEL=gpt-4o-mini
+```
+
+Copywriter and Critic are the quality-sensitive agents most likely to benefit from upgrading to `gpt-4o`.
