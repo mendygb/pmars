@@ -1,4 +1,5 @@
 openai
+braintrust
 pinecone
 pymongo
 langchain-text-splitters

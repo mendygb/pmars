@@ -196,6 +196,38 @@ Session transcripts are saved to `agents/outputs/`.
 
 ---
 
+## Offline Eval (`eval/`)
+
+Four-layer eval framework for offline quality checks. All evals require `BRAINTRUST_API_KEY` set in `.env` — results are logged to the `pmars` Braintrust project with automatic experiment diffs.
+
+```bash
+# Director routing accuracy (OPENAI_API_KEY)
+python eval/director/run_eval.py
+
+# Retrieval recall@4 + MRR (Pinecone + MongoDB + OPENAI_API_KEY)
+python eval/retrieval/run_eval.py
+
+# End-to-end quality — LLM-as-judge across 5 pipeline paths (all services)
+python eval/end_to_end/run_eval.py
+
+# Safety — injection classifier (OPENAI_API_KEY)
+python eval/safety/run_injection_eval.py
+
+# Safety — content safety check (downloads KoalaAI model ~400MB on first run)
+python eval/safety/run_safety_check_eval.py
+```
+
+| Layer | What it tests | Threshold |
+|---|---|---|
+| **Director** | Routing accuracy across 19 golden cases | 85% `next_node` accuracy |
+| **Retrieval** | Hybrid recall (Pinecone + MongoDB tag search + RRF) | 80% recall@4; MRR reference only |
+| **End-to-end** | Full pipeline quality via LLM-as-judge (5 cases: RAG, web, URL, Google Maps, refinement turn) | `pipeline_complete`=1.0 per case; faithfulness/relevance/completeness avg ≥ 0.6 |
+| **Safety** | Injection classifier + HuggingFace content check | 90% accuracy; 0% false positive rate on each |
+
+See `eval/EVAL_NOTES.md` for design rationale and known limitations.
+
+---
+
 ## Model Notes
 
 All agents default to `gpt-4o-mini`. Each agent's model is independently configurable via `.env` — set any of the following to swap a specific agent without touching code:

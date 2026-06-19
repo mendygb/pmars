@@ -1,0 +1,45 @@
+[
+  {
+    "id": "e001",
+    "category": "bay_area_rag",
+    "note": "Bay Area place with detail — full pipeline via RAG (Pinecone + MongoDB tag search)",
+    "user_input": "I hiked Mission Peak at dawn and caught the whole Bay Area lit up below me, it was surreal and totally worth the 6am alarm",
+    "expected_style": "checkin"
+  },
+  {
+    "id": "e002",
+    "category": "non_bay_area_web",
+    "note": "Non-Bay Area place — full pipeline via Tavily web search",
+    "user_input": "I visited Shibuya Crossing in Tokyo at night, the sea of people moving in every direction at once was overwhelming in the best way",
+    "expected_style": "checkin"
+  },
+  {
+    "id": "e003",
+    "category": "url_fetch",
+    "note": "URL input — exercises fetch_url tool in the research node",
+    "user_input": "Write a post based on this: https://en.wikipedia.org/wiki/Muir_Woods_National_Monument",
+    "expected_style": "recommendation"
+  },
+  {
+    "id": "e004",
+    "category": "google_maps_place",
+    "note": "Specific named restaurant — should trigger get_place_details via Google Maps MCP for rating, hours, and price tier. Tests the fourth research tool not covered by other cases.",
+    "user_input": "I had dinner at Chez Panisse in Berkeley last night — Alice Waters' legendary farm-to-table restaurant. The seasonal tasting menu was stunning, every dish tasted like it was picked that morning. Write a post about it.",
+    "expected_style": "checkin"
+  },
+  {
+    "id": "e005",
+    "category": "refinement_turn",
+    "note": "Refinement turn with pre-seeded draft — Director should route directly to copywriter without hitting research. Tests the multi-turn editing path (copywriter-only routing).",
+    "user_input": "Make it shorter and more casual, three paragraphs max",
+    "initial_state_overrides": {
+      "draft_content": "Conquered Mission Peak at the crack of dawn and the Bay Area opened up below me like a living map — the Bay shimmering silver under the early light, the bridges strung like necklaces in the distance. 🌅\n\nThe trail is no joke: six miles round trip, 2,100 feet of elevation gain, with a final scramble up a steep rocky ridge to reach the pole. I left the trailhead at 5:30am and shared the summit with exactly three other people before the weekend runners arrived. That silence at the top, with just the wind and the view stretching from Mount Tam to the Santa Cruz mountains, made every burning step completely worth it.\n\nPro tips: start early (really early), bring poles for the final stretch, and pack at least two liters of water — there's no refill on trail. The parking lot fills fast on weekends, so aim for a 5am arrival or take the free shuttle from the BART station during busy months.\n\n#MissionPeak #BayAreaHiking #EastBay #HikingBayArea #Fremont #SunriseHike #HikingCommunity",
+      "location_info": {
+        "style_context": "Mission Peak Regional Preserve, Fremont, CA. 6-mile round trip trail, 2,100 ft elevation gain. Steep rocky summit scramble. No water on trail. Free shuttle available from BART on weekends. Parking fills fast. Best at sunrise."
+      },
+      "style": "checkin"
+    },
+    "judge_input_for_quality": "User wants a shorter, more casual version (3 paragraphs max) of a post about hiking Mission Peak at dawn in the Bay Area. The revised post should preserve the key facts (distance, elevation, tips) in a more conversational tone.",
+    "expected_style": "checkin"
+  }
+]

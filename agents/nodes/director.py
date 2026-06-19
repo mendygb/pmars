@@ -34,8 +34,8 @@ SYSTEM_PROMPT = """You are the Director of a social media post-writing pipeline.
 
 **New post after refinement (existing draft present but user describes a brand-new experience or place):**
 - Explicit signals: "I went to X", "write about X", "not the post I want, I want one about X", "different place", describing somewhere that wasn't in the original request
-- Location change signal: refinement message names a place clearly different from the draft's location — even without saying "new post" — treat as is_new_post = true and route to research
-- Set is_new_post to true AND next_node to "research" — this resets the draft and retrieves fresh context
+- Location change signal: refinement message names a place clearly different from the draft's location — even without saying "new post" — route to research
+- "I don't like it", "start over", "redo it" → route to copywriter and rewrite from scratch — do NOT ask for clarification
 
 ## Output Format
 Respond ONLY with a valid JSON object:
@@ -43,8 +43,7 @@ Respond ONLY with a valid JSON object:
   "style": "checkin" | "recommendation" | "guide" | "diary" | "freeform",
   "next_node": "research" | "copywriter" | "critic" | "ask_user",
   "needs_clarification": true | false,
-  "clarification_question": "<one short targeted question>" | null,
-  "is_new_post": true | false
+  "clarification_question": "<one short targeted question>" | null
 }"""
 
 
@@ -90,7 +89,6 @@ def make_director_node(debug=False):
                 "\n── Director ─────────────────────────────────────\n"
                 f"  style:          {decision.get('style')}\n"
                 f"  next_node:      {decision.get('next_node')}\n"
-                f"  is_new_post:    {decision.get('is_new_post')}\n"
                 f"  clarification:  {decision.get('needs_clarification')} → {decision.get('clarification_question')}\n"
                 f"  LLM (routing):  {llm_ms:>6} ms\n"
                 "─────────────────────────────────────────────────"
@@ -98,7 +96,7 @@ def make_director_node(debug=False):
 
         needs_clarification = decision.get("needs_clarification", False)
 
-        updates = {
+        return {
             "style": decision.get("style", "freeform"),
             # Force ask_user when clarification is needed — prevents running downstream agents simultaneously
             "next_node": "ask_user" if needs_clarification else decision.get("next_node", "research"),
@@ -106,12 +104,5 @@ def make_director_node(debug=False):
             "clarification_question": decision.get("clarification_question") or "",
             "user_profile_injected": bool(state.get("media_id")),
         }
-
-        # Reset draft and location if the user is starting a brand-new post
-        if decision.get("is_new_post"):
-            updates["draft_content"] = ""
-            updates["location_info"] = {}
-
-        return updates
 
     return director_node

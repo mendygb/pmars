@@ -1,0 +1,323 @@
+[
+  {
+    "id": "d001",
+    "category": "first_turn_specific_place",
+    "note": "Specific named place + at least one detail → should route to research without asking",
+    "state": {
+      "user_input": "Help me write a post about my brunch at Tartine Manufactory, the croissants were amazing",
+      "history": [],
+      "draft_content": null
+    },
+    "expected": {
+      "next_node": "research",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d002",
+    "category": "first_turn_specific_place",
+    "note": "Location injected in first message with detail → research",
+    "state": {
+      "user_input": "[Location: Golden Gate Park] I spent the afternoon walking around and found this hidden waterfall trail",
+      "history": [],
+      "draft_content": null
+    },
+    "expected": {
+      "next_node": "research",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d003",
+    "category": "first_turn_vague",
+    "note": "Just a place name with no personal detail → should ask one question",
+    "state": {
+      "user_input": "Write a post about Dolores Park",
+      "history": [],
+      "draft_content": null
+    },
+    "expected": {
+      "next_node": "ask_user",
+      "needs_clarification": true
+    }
+  },
+  {
+    "id": "d004",
+    "category": "first_turn_vague",
+    "note": "Extremely generic with no place or detail → ask",
+    "state": {
+      "user_input": "Help me write a post",
+      "history": [],
+      "draft_content": null
+    },
+    "expected": {
+      "next_node": "ask_user",
+      "needs_clarification": true
+    }
+  },
+  {
+    "id": "d005",
+    "category": "first_turn_url",
+    "note": "User provides a URL → route directly to research, no clarification",
+    "state": {
+      "user_input": "Write a post based on this: https://www.eater.com/some-restaurant-review",
+      "history": [],
+      "draft_content": null
+    },
+    "expected": {
+      "next_node": "research",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d006",
+    "category": "refinement_tone",
+    "note": "Draft exists, user wants tone change → copywriter only",
+    "state": {
+      "user_input": "Make it more casual and fun",
+      "history": [
+        {"role": "user", "content": "Write a post about my hike at Muir Woods"},
+        {"role": "assistant", "content": "Here's a draft about Muir Woods..."}
+      ],
+      "draft_content": "Spent the morning at Muir Woods National Monument..."
+    },
+    "expected": {
+      "next_node": "copywriter",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d007",
+    "category": "refinement_tone",
+    "note": "Draft exists, user wants it shorter → copywriter only",
+    "state": {
+      "user_input": "Make it shorter",
+      "history": [
+        {"role": "user", "content": "Write a post about Ferry Building farmers market"},
+        {"role": "assistant", "content": "Here's a draft..."}
+      ],
+      "draft_content": "Every Saturday morning, the Ferry Building transforms..."
+    },
+    "expected": {
+      "next_node": "copywriter",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d008",
+    "category": "refinement_tone",
+    "note": "Draft exists, explicit length instruction → copywriter only, not ask_user",
+    "state": {
+      "user_input": "Three paragraphs",
+      "history": [
+        {"role": "user", "content": "Write a post about my dim sum experience"},
+        {"role": "assistant", "content": "Here's a draft..."}
+      ],
+      "draft_content": "Had the most incredible dim sum at..."
+    },
+    "expected": {
+      "next_node": "copywriter",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d009",
+    "category": "refinement_new_info",
+    "note": "Draft exists, user adds new factual info → research to re-retrieve",
+    "state": {
+      "user_input": "Add some tips about parking and how to get there by BART",
+      "history": [
+        {"role": "user", "content": "Write a post about Tartine Manufactory"},
+        {"role": "assistant", "content": "Here's a draft..."}
+      ],
+      "draft_content": "Tartine Manufactory is a must-visit in the Mission..."
+    },
+    "expected": {
+      "next_node": "research",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d010",
+    "category": "refinement_new_info",
+    "note": "Draft exists, user mentions another place they visited → research",
+    "state": {
+      "user_input": "I also stopped by Dandelion Chocolate nearby, can you add that?",
+      "history": [
+        {"role": "user", "content": "Write a post about the Mission District"},
+        {"role": "assistant", "content": "Here's a draft..."}
+      ],
+      "draft_content": "The Mission District is one of SF's most vibrant neighborhoods..."
+    },
+    "expected": {
+      "next_node": "research",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d011",
+    "category": "refinement_hashtag",
+    "note": "Draft exists, user wants hashtag fix only → critic",
+    "state": {
+      "user_input": "Fix the hashtags",
+      "history": [
+        {"role": "user", "content": "Write a post about hiking at Mount Tam"},
+        {"role": "assistant", "content": "Here's a draft..."}
+      ],
+      "draft_content": "Mount Tamalpais offers some of the most stunning views... #hiking #nature"
+    },
+    "expected": {
+      "next_node": "critic",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d012",
+    "category": "refinement_hashtag",
+    "note": "Draft exists, user wants hook improved → critic or copywriter both acceptable",
+    "state": {
+      "user_input": "The opening line is too generic, make it catchier",
+      "history": [
+        {"role": "user", "content": "Write a post about Philz Coffee"},
+        {"role": "assistant", "content": "Here's a draft..."}
+      ],
+      "draft_content": "Philz Coffee is a great place to work from..."
+    },
+    "expected": {
+      "next_node": "critic",
+      "accepted_next_nodes": ["critic", "copywriter"],
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d013",
+    "category": "new_post_after_draft",
+    "note": "Draft exists but user describes a completely different place → is_new_post=True, research",
+    "state": {
+      "user_input": "Actually I want to write about my dinner at Nopa instead",
+      "history": [
+        {"role": "user", "content": "Write a post about Tartine"},
+        {"role": "assistant", "content": "Here's a draft..."}
+      ],
+      "draft_content": "Tartine Manufactory is the kind of place..."
+    },
+    "expected": {
+      "next_node": "research",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d014",
+    "category": "new_post_after_draft",
+    "note": "Draft exists, user mentions a new location without saying 'new post' → still is_new_post",
+    "state": {
+      "user_input": "I went to Sightglass Coffee this morning, write about that",
+      "history": [
+        {"role": "user", "content": "Write a post about Blue Bottle"},
+        {"role": "assistant", "content": "Here's a draft..."}
+      ],
+      "draft_content": "Blue Bottle Coffee at Hayes Valley..."
+    },
+    "expected": {
+      "next_node": "research",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d015",
+    "category": "first_turn_after_clarification",
+    "note": "Director already asked a question, user answered — should NOT ask again, proceed to research",
+    "state": {
+      "user_input": "I had an amazing picnic there with friends, the views were incredible",
+      "history": [
+        {"role": "user", "content": "Write a post about Dolores Park"},
+        {"role": "assistant", "content": "What was the highlight of your visit — a specific activity, food, or vibe?"},
+        {"role": "user", "content": "I had an amazing picnic there with friends, the views were incredible"}
+      ],
+      "draft_content": null
+    },
+    "expected": {
+      "next_node": "research",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d016",
+    "category": "refinement_tone",
+    "note": "Draft exists, language change request → copywriter",
+    "state": {
+      "user_input": "Write it in Chinese",
+      "history": [
+        {"role": "user", "content": "Write a post about Pier 39"},
+        {"role": "assistant", "content": "Here's a draft..."}
+      ],
+      "draft_content": "Pier 39 is more than just a tourist trap..."
+    },
+    "expected": {
+      "next_node": "copywriter",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d017",
+    "category": "first_turn_specific_place",
+    "note": "Non-Bay Area place with detail → research (web search path)",
+    "state": {
+      "user_input": "I just visited the Louvre in Paris and saw the Mona Lisa, it was surreal",
+      "history": [],
+      "draft_content": null
+    },
+    "expected": {
+      "next_node": "research",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d018",
+    "category": "refinement_tone",
+    "note": "Emoji density request → copywriter",
+    "state": {
+      "user_input": "Add more emojis",
+      "history": [
+        {"role": "user", "content": "Write a post about boba tea"},
+        {"role": "assistant", "content": "Here's a draft..."}
+      ],
+      "draft_content": "Found the most incredible boba spot in the Richmond..."
+    },
+    "expected": {
+      "next_node": "copywriter",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d019",
+    "category": "edge_case",
+    "note": "Ambiguous refinement — 'I don't like it' with no direction → copywriter (safest default)",
+    "state": {
+      "user_input": "I don't like it, start over",
+      "history": [
+        {"role": "user", "content": "Write a post about Alcatraz"},
+        {"role": "assistant", "content": "Here's a draft..."}
+      ],
+      "draft_content": "Alcatraz Island sits just 1.25 miles offshore..."
+    },
+    "expected": {
+      "next_node": "copywriter",
+      "needs_clarification": false
+    }
+  },
+  {
+    "id": "d020",
+    "category": "edge_case",
+    "note": "TODO: add real edge case from production session that caused a routing mistake",
+    "state": {
+      "user_input": "__PLACEHOLDER__",
+      "history": [],
+      "draft_content": null
+    },
+    "expected": {
+      "next_node": "__PLACEHOLDER__",
+      "needs_clarification": false
+    }
+  }
+]

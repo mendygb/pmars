@@ -1,0 +1,58 @@
+[
+  {
+    "id": "r001",
+    "category": "specific_place_bay_area",
+    "query": "Mission Peak sunrise hike Fremont Bay Area",
+    "expected_pids": ["p_003", "p_021"],
+    "note": "Both Mission Peak posts should surface; tests named-place dense retrieval"
+  },
+  {
+    "id": "r002",
+    "category": "tag_based",
+    "query": "Thai food quick lunch Mountain View",
+    "expected_pids": ["p_002", "p_022"],
+    "note": "Both Khao Kang posts; Thai tag should give keyword search a strong signal"
+  },
+  {
+    "id": "r003",
+    "category": "style_reference",
+    "query": "hiking trail nature views Bay Area outdoor",
+    "expected_pids": ["p_003", "p_012"],
+    "note": "Conservative expected set — Mission Peak and Foothills Trail are clearest match; p_017/p_024 are acceptable bonus hits"
+  },
+  {
+    "id": "r004",
+    "category": "specific_place_bay_area",
+    "query": "Happy Hollow zoo animals kids San Jose",
+    "expected_pids": ["p_010", "p_014"],
+    "note": "Both Happy Hollow posts should surface; HappyHollow tag is precise"
+  },
+  {
+    "id": "r005",
+    "category": "specific_place_bay_area",
+    "query": "Great America roller coaster amusement park Santa Clara",
+    "expected_pids": ["p_011", "p_016"],
+    "note": "Both Great America posts; GreatAmerica tag + place name in dense vector"
+  },
+  {
+    "id": "r006",
+    "category": "style_reference",
+    "query": "romantic dinner date night restaurant",
+    "expected_pids": ["p_005", "p_009"],
+    "note": "The Sea (luxury dining) and Taverna Vibes (dinner) — dense vector matches on dinner/romantic semantics"
+  },
+  {
+    "id": "r007",
+    "category": "vague_query",
+    "query": "fun things to do weekend",
+    "expected_pids": ["p_011"],
+    "note": "Vague query — only require one activity/fun post in top-4; this tests graceful degradation, not precision"
+  },
+  {
+    "id": "r008",
+    "category": "specific_place_bay_area",
+    "query": "Filoli Gardens flowers history tour Woodside",
+    "expected_pids": ["p_004", "p_020"],
+    "note": "Both Filoli posts should surface; Filoli tag is precise"
+  }
+]
