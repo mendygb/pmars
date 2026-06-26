@@ -18,7 +18,7 @@ Thresholds (CI gate):
   0.6 reflects creative writing baseline — LLM blends retrieved facts with world knowledge,
   which is expected behavior. 0.6 still catches systematic hallucination patterns.
 
-Judge model: gpt-4o-mini at temperature=0
+Judge model: ChatOpenAI wrapping gpt-4o-mini at temperature=0 (override with EVAL_JUDGE_MODEL; swap ChatOpenAI for another LangChain provider class for cross-provider use)
 
 Usage:
     python eval/end_to_end/run_eval.py
@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 
 import braintrust
+from langchain_openai import ChatOpenAI
 from openai import OpenAI
 from pinecone import Pinecone
 from pymongo import MongoClient
@@ -51,7 +52,8 @@ from agents.state import PostState
 CASES_PATH = Path(__file__).parent / "test_cases.json"
 RAG_DIR = Path(__file__).parent.parent.parent / "rag"
 
-JUDGE_MODEL = "gpt-4o-mini"
+JUDGE_MODEL    = os.environ.get("EVAL_JUDGE_MODEL",    "gpt-4o-mini")  # override to switch OpenAI judge model (e.g. gpt-4o); cross-provider requires langchain-anthropic + conditional client
+JUDGE_PROVIDER = os.environ.get("EVAL_JUDGE_PROVIDER", "openai")       # reserved for future cross-provider support; currently only "openai" is wired up
 QUALITY_THRESHOLD = 0.6  # faithfulness, relevance, completeness — 0.6 reflects creative writing baseline (LLM blends retrieved facts with world knowledge)
 
 
@@ -97,7 +99,9 @@ Score each criterion from 0.0 to 1.0:
 - relevance: Is the post clearly about the experience/place the user described?
 - completeness: Does the post incorporate the key details and aspects the user mentioned?
 
-Return JSON only: {{"relevance": float, "completeness": float, "reasoning": "brief explanation"}}"""
+Think through your evaluation first, then assign scores.
+
+Return JSON only: {{"reasoning": "step-by-step evaluation", "relevance": float, "completeness": float}}"""
 
 _REFERENCE_PROMPT = """Evaluate this Xiaohongshu (Chinese social media) post for quality.
 
@@ -112,59 +116,41 @@ Score each criterion from 0.0 to 1.0:
 - hashtag_quality: Hashtags are relevant and specific, not generic filler
 - personal_voice: Reads like an authentic personal experience, not a template
 
-Return JSON only: {{"hook_strength": float, "style_match": float, "hashtag_quality": float, "personal_voice": float, "reasoning": "brief explanation"}}"""
+Think through your evaluation first, then assign scores.
+
+Return JSON only: {{"reasoning": "step-by-step evaluation", "hook_strength": float, "style_match": float, "hashtag_quality": float, "personal_voice": float}}"""
 
 
 # ── Judge functions ────────────────────────────────────────────────────────────
 
-def judge_faithfulness(judge: OpenAI, post: str, context: str) -> tuple[float, list[dict]]:
+def judge_faithfulness(judge: ChatOpenAI, post: str, context: str) -> tuple[float, list[dict]]:
     """Claim decomposition: extract claims then verify each against context."""
-    resp = judge.chat.completions.create(
-        model=JUDGE_MODEL,
-        temperature=0,
-        response_format={"type": "json_object"},
-        messages=[{"role": "user", "content": _CLAIM_EXTRACT_PROMPT.format(post=post)}],
-    )
-    claims = json.loads(resp.choices[0].message.content).get("claims", [])
+    resp = judge.invoke(_CLAIM_EXTRACT_PROMPT.format(post=post))
+    claims = json.loads(resp.content).get("claims", [])
 
     if not claims:
         return 1.0, []
 
     results = []
     for claim in claims:
-        resp = judge.chat.completions.create(
-            model=JUDGE_MODEL,
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[{"role": "user", "content": _CLAIM_VERIFY_PROMPT.format(context=context, claim=claim)}],
-        )
-        supported = json.loads(resp.choices[0].message.content).get("supported", False)
+        resp = judge.invoke(_CLAIM_VERIFY_PROMPT.format(context=context, claim=claim))
+        supported = json.loads(resp.content).get("supported", False)
         results.append({"claim": claim, "supported": supported})
 
     score = sum(1 for r in results if r["supported"]) / len(results)
     return score, results
 
 
-def judge_quality(judge: OpenAI, user_input: str, post: str) -> dict:
+def judge_quality(judge: ChatOpenAI, user_input: str, post: str) -> dict:
     """Single pass: relevance + completeness."""
-    resp = judge.chat.completions.create(
-        model=JUDGE_MODEL,
-        temperature=0,
-        response_format={"type": "json_object"},
-        messages=[{"role": "user", "content": _QUALITY_PROMPT.format(user_input=user_input, post=post)}],
-    )
-    return json.loads(resp.choices[0].message.content)
+    resp = judge.invoke(_QUALITY_PROMPT.format(user_input=user_input, post=post))
+    return json.loads(resp.content)
 
 
-def judge_reference(judge: OpenAI, post: str, style: str) -> dict:
+def judge_reference(judge: ChatOpenAI, post: str, style: str) -> dict:
     """Single pass: hook, style, hashtags, voice — reference only."""
-    resp = judge.chat.completions.create(
-        model=JUDGE_MODEL,
-        temperature=0,
-        response_format={"type": "json_object"},
-        messages=[{"role": "user", "content": _REFERENCE_PROMPT.format(post=post, style=style)}],
-    )
-    return json.loads(resp.choices[0].message.content)
+    resp = judge.invoke(_REFERENCE_PROMPT.format(post=post, style=style))
+    return json.loads(resp.content)
 
 
 # ── Pipeline setup ─────────────────────────────────────────────────────────────
@@ -231,7 +217,7 @@ async def main(verbose: bool):
     print(f"Running {len(cases)} end-to-end cases...")
 
     compiled = setup_pipeline()
-    judge = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    judge = ChatOpenAI(model=JUDGE_MODEL, temperature=0)
 
     experiment = braintrust.init(
         project="pmars",
