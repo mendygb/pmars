@@ -153,9 +153,6 @@ def make_copywriter_node(debug=False):
 
         except Exception as e:
             logger.warning(f"Copywriter failed: {e}")
-            return {
-                "draft_content": "",
-                "final_post": "Something went wrong while writing your post. Please try again.",
-            }
+            raise
 
     return copywriter_node
