@@ -60,49 +60,60 @@ def make_director_node(debug=False):
 
         has_draft = bool(state.get("draft_content"))
 
-        lc_messages = [SystemMessage(content=SYSTEM_PROMPT)]
+        try:
+            lc_messages = [SystemMessage(content=SYSTEM_PROMPT)]
 
-        # Include conversation history so Director understands prior turns
-        for turn in state.get("history", []):
-            if turn["role"] == "user":
-                lc_messages.append(HumanMessage(content=turn["content"]))
-            elif turn["role"] == "assistant":
-                lc_messages.append(AIMessage(content=turn["content"]))
+            # Include conversation history so Director understands prior turns
+            for turn in state.get("history", []):
+                if turn["role"] == "user":
+                    lc_messages.append(HumanMessage(content=turn["content"]))
+                elif turn["role"] == "assistant":
+                    lc_messages.append(AIMessage(content=turn["content"]))
 
-        # On refinement turns, show the Director the current draft alongside the new request
-        user_content = state["user_input"]
-        if has_draft:
-            user_content = (
-                f"[Current draft]\n{state['draft_content']}\n\n"
-                f"[User's request]\n{state['user_input']}"
-            )
-        lc_messages.append(HumanMessage(content=user_content))
+            # On refinement turns, show the Director the current draft alongside the new request
+            user_content = state["user_input"]
+            if has_draft:
+                user_content = (
+                    f"[Current draft]\n{state['draft_content']}\n\n"
+                    f"[User's request]\n{state['user_input']}"
+                )
+            lc_messages.append(HumanMessage(content=user_content))
 
-        t0 = time.time()
-        response = await llm.ainvoke(lc_messages)
-        llm_ms = int((time.time() - t0) * 1000)
+            t0 = time.time()
+            response = await llm.ainvoke(lc_messages)
+            llm_ms = int((time.time() - t0) * 1000)
 
-        decision = json.loads(response.content)
+            decision = json.loads(response.content)
 
-        if debug:
-            logger.debug(
-                "\n── Director ─────────────────────────────────────\n"
-                f"  style:          {decision.get('style')}\n"
-                f"  next_node:      {decision.get('next_node')}\n"
-                f"  clarification:  {decision.get('needs_clarification')} → {decision.get('clarification_question')}\n"
-                f"  LLM (routing):  {llm_ms:>6} ms\n"
-                "─────────────────────────────────────────────────"
-            )
+            if debug:
+                logger.debug(
+                    "\n── Director ─────────────────────────────────────\n"
+                    f"  style:          {decision.get('style')}\n"
+                    f"  next_node:      {decision.get('next_node')}\n"
+                    f"  clarification:  {decision.get('needs_clarification')} → {decision.get('clarification_question')}\n"
+                    f"  LLM (routing):  {llm_ms:>6} ms\n"
+                    "─────────────────────────────────────────────────"
+                )
 
-        needs_clarification = decision.get("needs_clarification", False)
+            needs_clarification = decision.get("needs_clarification", False)
 
-        return {
-            "style": decision.get("style", "freeform"),
-            # Force ask_user when clarification is needed — prevents running downstream agents simultaneously
-            "next_node": "ask_user" if needs_clarification else decision.get("next_node", "research"),
-            "needs_clarification": needs_clarification,
-            "clarification_question": decision.get("clarification_question") or "",
-            "user_profile_injected": bool(state.get("media_id")),
-        }
+            return {
+                "style": decision.get("style", "freeform"),
+                # Force ask_user when clarification is needed — prevents running downstream agents simultaneously
+                "next_node": "ask_user" if needs_clarification else decision.get("next_node", "research"),
+                "needs_clarification": needs_clarification,
+                "clarification_question": decision.get("clarification_question") or "",
+                "user_profile_injected": bool(state.get("media_id")),
+            }
+
+        except Exception as e:
+            logger.warning(f"Director failed, using fallback routing: {e}")
+            return {
+                "style": state.get("style", "freeform"),
+                "next_node": "copywriter" if has_draft else "research",
+                "needs_clarification": False,
+                "clarification_question": "",
+                "user_profile_injected": bool(state.get("media_id")),
+            }
 
     return director_node

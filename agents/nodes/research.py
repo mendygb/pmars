@@ -246,6 +246,13 @@ def make_research_node(sync_client: OpenAI, tavily_client, index, posts_col, chu
     async def research_node(state: PostState) -> dict:
         logger.info("🔍 Finding inspiration...")
 
+        try:
+            return await _research_node_impl(state)
+        except Exception as e:
+            logger.warning(f"Research failed, continuing with empty context: {e}")
+            return {"location_info": {}}
+
+    async def _research_node_impl(state: PostState) -> dict:
         # Build retrieval query from current input + recent history for richer semantic match
         query_parts = [state["user_input"]]
         for turn in state.get("history", [])[-4:]:  # last 2 turns

@@ -1,8 +1,11 @@
 import asyncio
 import json
+import logging
 import time
 from datetime import datetime, timezone
 from typing import AsyncGenerator
+
+logger = logging.getLogger(__name__)
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -216,7 +219,8 @@ async def run_chat_stream(
             yield _sse({"type": "done"})
 
         except Exception as e:
-            yield _sse({"type": "error", "payload": {"message": str(e)}})
+            logger.error(f"Unhandled pipeline error: {e}", exc_info=True)
+            yield _sse({"type": "error", "payload": {"message": "Something went wrong. Please try again."}})
 
     return StreamingResponse(
         event_stream(),

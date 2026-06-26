@@ -16,29 +16,38 @@ def make_safety_check_node(classifier, debug=False):
     async def safety_check_node(state: PostState) -> dict:
         draft = state.get("draft_content", "")
 
-        loop = asyncio.get_running_loop()
-        t0 = time.time()
-        result = await loop.run_in_executor(None, classifier, draft)
-        check_ms = int((time.time() - t0) * 1000)
-
-        # transformers pipeline returns a dict or list[dict] depending on version
-        top = result[0] if isinstance(result, list) else result
-        safe = top["label"] == SAFE_LABEL
-
-        if debug:
-            logger.debug(
-                f"\n── Safety Check ─────────────────────────────────\n"
-                f"  label:    {top['label']}  score: {top['score']:.3f}\n"
-                f"  passed:   {safe}\n"
-                f"  time:     {check_ms:>6} ms\n"
-                "─────────────────────────────────────────────────"
-            )
-
-        if safe:
+        # No draft means Copywriter failed upstream — pass through without running classifier
+        if not draft:
             return {"safety_passed": True}
-        return {
-            "safety_passed": False,
-            "final_post": FRIENDLY_ERROR,
-        }
+
+        try:
+            loop = asyncio.get_running_loop()
+            t0 = time.time()
+            result = await loop.run_in_executor(None, classifier, draft)
+            check_ms = int((time.time() - t0) * 1000)
+
+            # transformers pipeline returns a dict or list[dict] depending on version
+            top = result[0] if isinstance(result, list) else result
+            safe = top["label"] == SAFE_LABEL
+
+            if debug:
+                logger.debug(
+                    f"\n── Safety Check ─────────────────────────────────\n"
+                    f"  label:    {top['label']}  score: {top['score']:.3f}\n"
+                    f"  passed:   {safe}\n"
+                    f"  time:     {check_ms:>6} ms\n"
+                    "─────────────────────────────────────────────────"
+                )
+
+            if safe:
+                return {"safety_passed": True}
+            return {
+                "safety_passed": False,
+                "final_post": FRIENDLY_ERROR,
+            }
+
+        except Exception as e:
+            logger.warning(f"Safety classifier failed, failing open: {e}")
+            return {"safety_passed": True}
 
     return safety_check_node

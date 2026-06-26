@@ -34,32 +34,48 @@ def make_critic_node(debug=False):
         logger.info("✨ Adding the finishing touches...")
 
         draft = state.get("draft_content", "")
-        style = state.get("style", "freeform")
-        loc = state.get("location_info", {})
-        facts_context = loc.get("facts_context", "")
 
-        user_content = f"Post style: {style}\n\nDraft:\n{draft}"
-        if facts_context:
-            user_content += f"\n\nPlace details (for fact-check only):\n{facts_context[:800]}"
+        # No draft means Copywriter failed upstream — pass through the existing final_post
+        if not draft:
+            return {
+                "final_post": state.get("final_post", "Something went wrong. Please try again."),
+                "suggestions": [],
+            }
 
-        t0 = time.time()
-        response = await llm.ainvoke([
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=user_content),
-        ])
-        llm_ms = int((time.time() - t0) * 1000)
+        try:
+            style = state.get("style", "freeform")
+            loc = state.get("location_info", {})
+            facts_context = loc.get("facts_context", "")
 
-        if debug:
-            logger.debug(
-                f"\n── Critic ───────────────────────────────────────\n"
-                f"  LLM (review):   {llm_ms:>6} ms\n"
-                "─────────────────────────────────────────────────"
-            )
+            user_content = f"Post style: {style}\n\nDraft:\n{draft}"
+            if facts_context:
+                user_content += f"\n\nPlace details (for fact-check only):\n{facts_context[:800]}"
 
-        final_post = response.content.strip()
-        return {
-            "final_post": final_post,
-            "suggestions": [],
-        }
+            t0 = time.time()
+            response = await llm.ainvoke([
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=user_content),
+            ])
+            llm_ms = int((time.time() - t0) * 1000)
+
+            if debug:
+                logger.debug(
+                    f"\n── Critic ───────────────────────────────────────\n"
+                    f"  LLM (review):   {llm_ms:>6} ms\n"
+                    "─────────────────────────────────────────────────"
+                )
+
+            final_post = response.content.strip()
+            return {
+                "final_post": final_post,
+                "suggestions": [],
+            }
+
+        except Exception as e:
+            logger.warning(f"Critic failed, using Copywriter draft: {e}")
+            return {
+                "final_post": draft,
+                "suggestions": [],
+            }
 
     return critic_node

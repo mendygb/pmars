@@ -133,21 +133,29 @@ def make_copywriter_node(debug=False):
                 )
                 user_content = f"Conversation context:\n{qa_lines}\n\n{user_content}"
 
-        t0 = time.time()
-        response = await llm.ainvoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_content),
-        ])
-        llm_ms = int((time.time() - t0) * 1000)
+        try:
+            t0 = time.time()
+            response = await llm.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_content),
+            ])
+            llm_ms = int((time.time() - t0) * 1000)
 
-        if debug:
-            logger.debug(
-                f"\n── Copywriter ───────────────────────────────────\n"
-                f"  LLM (writing):  {llm_ms:>6} ms\n"
-                "─────────────────────────────────────────────────"
-            )
+            if debug:
+                logger.debug(
+                    f"\n── Copywriter ───────────────────────────────────\n"
+                    f"  LLM (writing):  {llm_ms:>6} ms\n"
+                    "─────────────────────────────────────────────────"
+                )
 
-        draft = response.content.strip()
-        return {"draft_content": draft}
+            draft = response.content.strip()
+            return {"draft_content": draft}
+
+        except Exception as e:
+            logger.warning(f"Copywriter failed: {e}")
+            return {
+                "draft_content": "",
+                "final_post": "Something went wrong while writing your post. Please try again.",
+            }
 
     return copywriter_node
